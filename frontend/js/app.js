@@ -1,0 +1,2813 @@
+/**
+ * ExamExpert AI — Client Application Controller
+ * SJB Institute of Technology | Office of the Controller of Examinations
+ *
+ * Implements 2-step OTP + Password Authentication, Progressive Single-Dashboard Allocation,
+ * 50:50 Parity Calculation, Conflict Prevention, PDF Generation, and Module Switching.
+ */
+
+// ─── Global State ─────────────────────────────────────────────────────────────
+const state = {
+  token: null,
+  currentUser: null,
+  targetRole: "Admin", // 'Admin' | 'HOD' | 'Faculty'
+  otpPolicy: "ALL_ROLES",
+  smtpConfigured: false,
+  activeCycle: "2025-26",
+  
+  // Dashboard selections
+  academicYear: "",
+  department: "",
+  semester: "",
+  subjectId: null,
+  subjectData: null,
+  minHandled: 3,
+  totalRequired: 4,
+
+  // Quota & Selection State
+  internalQuota: 2,
+  externalQuota: 2,
+  selectedInternalIds: new Set(),
+  selectedExternalIds: new Set(),
+  allInternalCandidates: [],
+  allExternalCandidates: [],
+
+  // Exception State
+  requiresException: false,
+  exceptionReason: "",
+
+  // Recent confirmed allocation
+  lastAllocationId: null,
+  lastRefNumber: null
+};
+
+const API_BASE = "";
+
+// ─── UI Design System: Toast Notifications & Feedback ────────────────────────
+function showToast(title, message = "", type = "info", duration = 4000) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+
+  const iconMap = {
+    success: "✓",
+    error: "✕",
+    warning: "⚠",
+    info: "ℹ"
+  };
+
+  const icon = iconMap[type] || "ℹ";
+
+  toast.innerHTML = `
+    <div class="toast-icon">${icon}</div>
+    <div class="toast-content">
+      <div class="toast-title">${title}</div>
+      ${message ? `<div class="toast-message">${message}</div>` : ""}
+    </div>
+    <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+  `;
+
+  container.appendChild(toast);
+
+  if (duration > 0) {
+    setTimeout(() => {
+      toast.classList.add("toast-fade-out");
+      setTimeout(() => {
+        if (toast.parentElement) toast.remove();
+      }, 200);
+    }, duration);
+  }
+}
+
+function renderEmptyState(container, title = "No Records Found", desc = "There are currently no items matching your criteria.", icon = "📭") {
+  if (typeof container === "string") {
+    container = document.getElementById(container);
+  }
+  if (!container) return;
+  container.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-state-icon">${icon}</div>
+      <div class="empty-state-title">${title}</div>
+      <div class="empty-state-desc">${desc}</div>
+    </div>
+  `;
+}
+
+function showLoading(container, text = "Loading data from Controller of Examinations registry...") {
+  if (typeof container === "string") {
+    container = document.getElementById(container);
+  }
+  if (!container) return;
+  container.innerHTML = `
+    <div class="loading-container">
+      <div class="spinner spinner-blue spinner-lg"></div>
+      <div>${text}</div>
+    </div>
+  `;
+}
+
+
+
+// ─── Initialization & Session Guard ──────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  // Parse role from path if present (e.g. /login/admin, /login/hod, /login/faculty)
+  const path = window.location.pathname.toLowerCase();
+  if (path.includes("/login/hod")) {
+    state.targetRole = "HOD";
+  } else if (path.includes("/login/faculty")) {
+    state.targetRole = "Faculty";
+  } else {
+    state.targetRole = "Admin";
+  }
+
+  fetchAuthSystemStatus();
+
+  const savedToken = sessionStorage.getItem("examexpert_token") || localStorage.getItem("examexpert_token");
+  if (savedToken) {
+    state.token = savedToken;
+    verifyExistingSession();
+  } else {
+    showLoginView();
+  }
+});
+
+async function fetchAuthSystemStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/status`);
+    if (res.ok) {
+      const data = await res.json();
+      state.smtpConfigured = data.smtp_configured;
+      state.otpPolicy = data.otp_policy;
+      
+      const banner = document.getElementById("dev-env-banner");
+      if (banner) {
+        banner.style.display = data.smtp_configured ? "none" : "flex";
+      }
+    }
+  } catch (e) {}
+}
+
+
+function showLoginView() {
+  document.getElementById("login-view").style.display = "flex";
+  document.getElementById("app-view").style.display = "none";
+  switchRolePortal(state.targetRole, false);
+  resetAuthFlow();
+}
+
+function showAppView() {
+  document.getElementById("login-view").style.display = "none";
+  document.getElementById("app-view").style.display = "flex";
+
+  // Role-based visibility
+  const isAdmin = state.currentUser && state.currentUser.role === "Admin";
+  const navUsers = document.getElementById("nav-users");
+  if (navUsers) navUsers.style.display = isAdmin ? "inline-flex" : "none";
+
+  const navDatasets = document.getElementById("nav-datasets");
+  if (navDatasets) navDatasets.style.display = isAdmin ? "inline-flex" : "none";
+
+  const btnAddSubject = document.getElementById("btn-add-subject");
+  if (btnAddSubject) btnAddSubject.style.display = isAdmin ? "inline-flex" : "none";
+
+  const subjSubtitle = document.getElementById("subjects-scope-subtitle");
+  const subjDeptFilter = document.getElementById("subj-filter-dept");
+  if (state.currentUser && !isAdmin && state.currentUser.department) {
+    if (subjSubtitle) {
+      subjSubtitle.textContent = `Department Scope: ${state.currentUser.department} (View-Only). Subjects are strictly filtered to your department.`;
+    }
+    if (subjDeptFilter) {
+      subjDeptFilter.value = state.currentUser.department;
+      subjDeptFilter.disabled = true;
+    }
+  } else {
+    if (subjSubtitle) {
+      subjSubtitle.textContent = "Browse, filter, add, and manage syllabus courses across all academic departments.";
+    }
+    if (subjDeptFilter) {
+      subjDeptFilter.disabled = false;
+    }
+  }
+
+  // Module 6: Faculty tab role-based scoping
+  const facSubtitle = document.getElementById("faculty-scope-subtitle");
+  const facDeptFilter = document.getElementById("fac-filter-dept");
+  const facTypeFilter = document.getElementById("fac-filter-type");
+  const facInstFilter = document.getElementById("fac-filter-inst");
+  const whitelistCard = document.getElementById("whitelist-governance-card");
+
+  if (whitelistCard) whitelistCard.style.display = isAdmin ? "block" : "none";
+
+  if (state.currentUser && !isAdmin && state.currentUser.department) {
+    if (facSubtitle) {
+      facSubtitle.textContent = `Department Scope: ${state.currentUser.department} (View-Only). Viewing internal departmental faculty records.`;
+    }
+    if (facDeptFilter) {
+      facDeptFilter.value = state.currentUser.department;
+      facDeptFilter.disabled = true;
+    }
+    if (facTypeFilter) {
+      facTypeFilter.value = "internal";
+      facTypeFilter.disabled = true;
+    }
+    if (facInstFilter) {
+      facInstFilter.disabled = true;
+    }
+  } else if (state.currentUser && state.currentUser.role === "Faculty") {
+    if (facSubtitle) {
+      facSubtitle.textContent = `Personal Faculty Profile & Status.`;
+    }
+    if (facDeptFilter) facDeptFilter.disabled = true;
+    if (facTypeFilter) {
+      facTypeFilter.value = "internal";
+      facTypeFilter.disabled = true;
+    }
+    if (facInstFilter) facInstFilter.disabled = true;
+  } else {
+    if (facSubtitle) {
+      facSubtitle.textContent = "Browse internal faculty records, external experts, eligibility statuses, and external institution whitelisting.";
+    }
+    if (facDeptFilter) facDeptFilter.disabled = false;
+    if (facTypeFilter) facTypeFilter.disabled = false;
+    if (facInstFilter) facInstFilter.disabled = false;
+  }
+
+  const adminBanner = document.getElementById("admin-live-stats-banner");
+  if (adminBanner) {
+    adminBanner.style.display = isAdmin ? "grid" : "none";
+    if (isAdmin) loadDashboardStats();
+  }
+
+  initializeDashboard();
+}
+
+async function verifyExistingSession() {
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (res.ok) {
+      state.currentUser = await res.json();
+      document.getElementById("header-user-badge").textContent = `${state.currentUser.username} (${state.currentUser.role})`;
+      showAppView();
+    } else {
+      sessionStorage.removeItem("examexpert_token");
+      showLoginView();
+    }
+  } catch (err) {
+    showLoginView();
+  }
+}
+
+
+// ─── Authentication Handlers & Role Portal Switching ─────────────────────────
+function switchRolePortal(role, updateUrl = true) {
+  state.targetRole = role;
+  
+  // Update button active state
+  ["Admin", "HOD", "Faculty"].forEach(r => {
+    const btn = document.getElementById(`btn-role-${r.toLowerCase()}`);
+    if (btn) {
+      if (r === role) btn.classList.add("active");
+      else btn.classList.remove("active");
+    }
+  });
+
+  const badge = document.getElementById("login-role-badge");
+  const emailLabel = document.getElementById("login-email-label");
+  const emailInput = document.getElementById("login-email");
+
+  if (role === "Admin") {
+    if (badge) {
+      badge.textContent = "Controller of Examinations (Admin) Portal";
+      badge.className = "badge badge-role-admin";
+    }
+    if (emailLabel) emailLabel.textContent = "Authorized Administrator Email";
+    if (emailInput) {
+      emailInput.placeholder = "admin@sjbit.edu.in";
+      emailInput.value = "admin@sjbit.edu.in";
+    }
+  } else if (role === "HOD") {
+    if (badge) {
+      badge.textContent = "Head of Department (HOD) Portal";
+      badge.className = "badge badge-role-hod";
+    }
+    if (emailLabel) emailLabel.textContent = "Department HOD Email";
+    if (emailInput) {
+      emailInput.placeholder = "hod.mca@sjbit.edu.in";
+      emailInput.value = "hod.mca@sjbit.edu.in";
+    }
+  } else if (role === "Faculty") {
+    if (badge) {
+      badge.textContent = "Faculty Member Portal";
+      badge.className = "badge badge-role-faculty";
+    }
+    if (emailLabel) emailLabel.textContent = "Registered Faculty Email";
+    if (emailInput) {
+      emailInput.placeholder = "faculty.mca@sjbit.edu.in";
+      emailInput.value = "faculty.mca@sjbit.edu.in";
+    }
+  }
+
+  if (updateUrl && window.history && window.history.pushState) {
+    window.history.pushState(null, "", `/login/${role.toLowerCase()}`);
+  }
+
+  resetAuthFlow();
+}
+
+function switchAuthMode(mode) {
+  clearLoginAlert();
+  document.getElementById("auth-mode-login").style.display = mode === "login" ? "block" : "none";
+  document.getElementById("auth-mode-activation").style.display = mode === "activation" ? "block" : "none";
+  document.getElementById("auth-mode-forgot").style.display = mode === "forgot" ? "block" : "none";
+}
+
+function showLoginAlert(msg, type = "info") {
+  const alertBox = document.getElementById("login-alert-box");
+  alertBox.className = `login-alert ${type}`;
+  alertBox.innerHTML = msg;
+  alertBox.style.display = "block";
+}
+
+function clearLoginAlert() {
+  const alertBox = document.getElementById("login-alert-box");
+  alertBox.style.display = "none";
+}
+
+function resetAuthFlow() {
+  clearLoginAlert();
+  document.getElementById("auth-step-email").style.display = "block";
+  document.getElementById("auth-step-otp").style.display = "none";
+  document.getElementById("auth-step-password").style.display = "none";
+  document.getElementById("login-otp").value = "";
+  document.getElementById("login-password").value = "";
+}
+
+async function handleSendOTP() {
+  const email = document.getElementById("login-email").value.trim();
+  if (!email) {
+    showLoginAlert("Please enter an authorized institutional email.", "error");
+    return;
+  }
+
+  // If institutional policy does not require OTP for this role, transition directly to password step
+  const requiresOtp = state.otpPolicy === "ALL_ROLES" || (state.otpPolicy === "ADMIN_ONLY" && state.targetRole === "Admin");
+  if (!requiresOtp) {
+    document.getElementById("auth-step-email").style.display = "none";
+    document.getElementById("auth-step-password").style.display = "block";
+    document.getElementById("login-password").focus();
+    return;
+  }
+
+  const btn = document.getElementById("btn-send-otp");
+  btn.disabled = true;
+  btn.textContent = "Processing...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/send-otp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, purpose: "Login Verification" })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showLoginAlert(data.detail || "Failed to dispatch verification code.", "error");
+      return;
+    }
+
+    // Notice: OTP is NEVER returned in response.
+    showLoginAlert(`✓ <strong>Verification Code Sent:</strong> A 6-digit code has been dispatched to ${email}.`, "info");
+    document.getElementById("auth-step-email").style.display = "none";
+    document.getElementById("auth-step-otp").style.display = "block";
+    document.getElementById("login-otp").focus();
+
+  } catch (err) {
+    showLoginAlert("Network error connecting to authentication server.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Continue with Email →";
+  }
+}
+
+async function handleVerifyOTP() {
+  const email = document.getElementById("login-email").value.trim();
+  const otp = document.getElementById("login-otp").value.trim();
+
+  if (!otp || otp.length !== 6) {
+    showLoginAlert("Please enter the 6-digit verification code.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("btn-verify-otp");
+  btn.disabled = true;
+  btn.textContent = "Verifying...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/verify-otp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, otp })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showLoginAlert(data.detail || "Invalid or expired verification code.", "error");
+      return;
+    }
+
+    showLoginAlert("✓ Verification code confirmed. Please enter your account password.", "success");
+    document.getElementById("auth-step-otp").style.display = "none";
+    document.getElementById("auth-step-password").style.display = "block";
+    document.getElementById("login-password").focus();
+
+  } catch (err) {
+    showLoginAlert("Error verifying code.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Verify OTP";
+  }
+}
+
+async function handleLoginSubmit() {
+  const email = document.getElementById("login-email").value.trim();
+  const password = document.getElementById("login-password").value;
+
+  if (!password) {
+    showLoginAlert("Please enter account password.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("btn-login-submit");
+  btn.disabled = true;
+  btn.textContent = "Signing In...";
+
+  const targetRoleEndpoint = state.targetRole ? state.targetRole.toLowerCase() : "admin";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/login/${targetRoleEndpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, target_role: state.targetRole })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showLoginAlert(data.detail || "Incorrect account password or unauthorized role.", "error");
+      return;
+    }
+
+    state.token = data.token;
+    state.currentUser = data.user;
+    sessionStorage.setItem("examexpert_token", data.token);
+
+    document.getElementById("header-user-badge").textContent = `${data.user.username} (${data.user.role})`;
+    showToast("Login Successful", `Welcome to ExamExpert AI, ${data.user.full_name || data.user.username}.`, "success");
+    showAppView();
+
+  } catch (err) {
+    showLoginAlert("Authentication server communication failed.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sign In to Examination Portal →";
+  }
+}
+
+// ─── First-Time Account Activation & Password Reset Handlers ──────────────────
+async function handleSendActivationOTP() {
+  const email = document.getElementById("act-email").value.trim();
+  if (!email) {
+    showLoginAlert("Please enter registered email address.", "error");
+    return;
+  }
+  const btn = document.getElementById("btn-act-send-otp");
+  btn.disabled = true;
+  btn.textContent = "Sending...";
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/send-otp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, purpose: "Account Activation" })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Verification Code Dispatched", `A 6-digit activation code was sent to ${email}.`, "info");
+      showLoginAlert(`✓ Activation code sent to ${email}.`, "info");
+    } else {
+      showLoginAlert(data.detail || "Failed to dispatch activation code.", "error");
+    }
+  } catch (e) {
+    showLoginAlert("Error dispatching activation code.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Send Activation OTP";
+  }
+}
+
+async function handleActivateAccount() {
+  const email = document.getElementById("act-email").value.trim();
+  const otp = document.getElementById("act-otp").value.trim();
+  const new_password = document.getElementById("act-password").value;
+
+  if (!email || !otp || !new_password) {
+    showLoginAlert("Please complete all activation fields.", "error");
+    return;
+  }
+  if (new_password.length < 8) {
+    showLoginAlert("Password must be at least 8 characters.", "error");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, otp, new_password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Account Activated", "Your account is now active. Please sign in.", "success");
+      switchAuthMode("login");
+      showLoginAlert("✓ Account successfully activated! Please log in.", "success");
+    } else {
+      showLoginAlert(data.detail || "Activation failed.", "error");
+    }
+  } catch (e) {
+    showLoginAlert("Error during activation.", "error");
+  }
+}
+
+async function handleSendForgotOTP() {
+  const email = document.getElementById("forgot-email").value.trim();
+  if (!email) {
+    showLoginAlert("Please enter your registered email.", "error");
+    return;
+  }
+  const btn = document.getElementById("btn-forgot-send-otp");
+  btn.disabled = true;
+  btn.textContent = "Sending...";
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Reset Code Sent", `A verification code was dispatched to ${email}.`, "info");
+      showLoginAlert(`✓ Verification code sent to ${email}.`, "info");
+    } else {
+      showLoginAlert(data.detail || "Failed to dispatch reset code.", "error");
+    }
+  } catch (e) {
+    showLoginAlert("Error requesting reset code.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Send Reset OTP";
+  }
+}
+
+async function handleResetPassword() {
+  const email = document.getElementById("forgot-email").value.trim();
+  const otp = document.getElementById("forgot-otp").value.trim();
+  const new_password = document.getElementById("forgot-new-password").value;
+
+  if (!email || !otp || !new_password) {
+    showLoginAlert("Please complete all reset fields.", "error");
+    return;
+  }
+  if (new_password.length < 8) {
+    showLoginAlert("Password must be at least 8 characters.", "error");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, otp, new_password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Password Reset Successful", "You may now log in with your new password.", "success");
+      switchAuthMode("login");
+      showLoginAlert("✓ Password reset successfully. Please log in.", "success");
+    } else {
+      showLoginAlert(data.detail || "Password reset failed.", "error");
+    }
+  } catch (e) {
+    showLoginAlert("Error resetting password.", "error");
+  }
+}
+
+async function handleLogout() {
+  try {
+    await fetch(`${API_BASE}/api/auth/logout`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+  } catch (e) {}
+  sessionStorage.removeItem("examexpert_token");
+  localStorage.removeItem("examexpert_token");
+  state.token = null;
+  state.currentUser = null;
+  showToast("Logged Out", "Your session has been securely closed.", "info");
+  showLoginView();
+}
+
+
+// ─── Module Tab Switching ─────────────────────────────────────────────────────
+function switchTab(tabId) {
+  document.querySelectorAll(".nav-pill").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".tab-pane").forEach(t => t.style.display = "none");
+
+  // Highlight pill
+  const activeBtn = Array.from(document.querySelectorAll(".nav-pill")).find(p => p.getAttribute("onclick")?.includes(tabId));
+  if (activeBtn) activeBtn.classList.add("active");
+
+  const pane = document.getElementById(`tab-${tabId}`);
+  if (pane) pane.style.display = "block";
+
+  if (tabId === "dashboard" && state.currentUser && state.currentUser.role === "Admin") loadDashboardStats();
+  if (tabId === "faculty") loadFacultyTab();
+  if (tabId === "subjects") loadSubjectMasterList();
+  if (tabId === "users") loadUsersList();
+  if (tabId === "history") loadAllocationHistory();
+  if (tabId === "notifications") loadNotifications();
+  if (tabId === "audit") loadAuditLogs();
+  if (tabId === "datasets") loadImportHistory();
+  if (tabId === "settings") loadPolicySettings();
+}
+
+
+// ─── Core Allocation Dashboard: Progressive Cascade ──────────────────────────
+async function initializeDashboard() {
+  await loadAcademicYears();
+}
+
+async function loadAcademicYears() {
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/academic-years`);
+    const data = await res.json();
+
+    const sel = document.getElementById("sel-academic-year");
+    sel.innerHTML = `<option value="">-- Select Examination Academic Year --</option>`;
+
+    let defaultYear = data.default_active_year || "2025-26";
+    state.activeCycle = defaultYear;
+    document.getElementById("header-cycle-text").textContent = `${defaultYear} Active`;
+
+    data.academic_years.forEach(ay => {
+      const opt = document.createElement("option");
+      opt.value = ay.year;
+      opt.textContent = ay.label;
+      if (ay.is_active) opt.selected = true;
+      sel.appendChild(opt);
+    });
+
+    if (sel.value) {
+      onAcademicYearChange();
+    }
+  } catch (err) {
+    console.error("Failed to load academic years", err);
+  }
+}
+
+async function onAcademicYearChange() {
+  const ay = document.getElementById("sel-academic-year").value;
+  state.academicYear = ay;
+
+  // Reset dependents
+  resetDropdown("sel-department", "-- Select Academic Department --");
+  resetDropdown("sel-semester", "-- Select Department First --");
+  resetDropdown("sel-subject", "-- Select Semester First --");
+  disableControls(["sel-department", "sel-semester", "sel-subject", "sel-min-handled", "sel-total-required"]);
+  hideAllocationPanels();
+
+  if (!ay) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/departments?academic_year=${encodeURIComponent(ay)}`);
+    const data = await res.json();
+
+    const selDept = document.getElementById("sel-department");
+    selDept.innerHTML = `<option value="">-- Select Academic Department --</option>`;
+    data.departments.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = d;
+      opt.textContent = d;
+      selDept.appendChild(opt);
+    });
+    selDept.disabled = false;
+
+    // Auto-select MCA if available
+    if (data.departments.includes("MCA")) {
+      selDept.value = "MCA";
+      onDepartmentChange();
+    }
+  } catch (err) {
+    console.error("Failed to load departments", err);
+  }
+}
+
+async function onDepartmentChange() {
+  const dept = document.getElementById("sel-department").value;
+  state.department = dept;
+
+  resetDropdown("sel-semester", "-- Select Semester --");
+  resetDropdown("sel-subject", "-- Select Semester First --");
+  disableControls(["sel-semester", "sel-subject", "sel-min-handled", "sel-total-required"]);
+  hideAllocationPanels();
+
+  if (!dept) return;
+
+  // Visual reminder for MCA strict 4 semesters
+  const semHint = document.getElementById("sem-hint");
+  if (dept.toLowerCase().includes("mca")) {
+    semHint.textContent = "Strictly Sem I–IV";
+  } else {
+    semHint.textContent = "Step 3";
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/semesters?academic_year=${encodeURIComponent(state.academicYear)}&department=${encodeURIComponent(dept)}`);
+    const data = await res.json();
+
+    const selSem = document.getElementById("sel-semester");
+    selSem.innerHTML = `<option value="">-- Select Semester --</option>`;
+    data.semesters.forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s.value;
+      opt.textContent = s.label;
+      selSem.appendChild(opt);
+    });
+    selSem.disabled = false;
+
+    if (data.semesters.length > 0) {
+      selSem.selectedIndex = 1;
+      onSemesterChange();
+    }
+  } catch (err) {
+    console.error("Failed to load semesters", err);
+  }
+}
+
+async function onSemesterChange() {
+  const sem = document.getElementById("sel-semester").value;
+  state.semester = sem;
+
+  resetDropdown("sel-subject", "-- Select Theory Course --");
+  disableControls(["sel-subject", "sel-min-handled", "sel-total-required"]);
+  hideAllocationPanels();
+
+  if (!sem) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/subjects?academic_year=${encodeURIComponent(state.academicYear)}&department=${encodeURIComponent(state.department)}&semester=${encodeURIComponent(sem)}`);
+    const data = await res.json();
+
+    const selSubj = document.getElementById("sel-subject");
+    selSubj.innerHTML = `<option value="">-- Select Theory Course --</option>`;
+
+    if (data.subjects.length === 0) {
+      selSubj.innerHTML = `<option value="">No syllabus subjects found for selected criteria</option>`;
+      return;
+    }
+
+    data.subjects.forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.dataset.json = JSON.stringify(s);
+      opt.textContent = `${s.course_code} - ${s.title} (${s.badge_label})`;
+      selSubj.appendChild(opt);
+    });
+
+    selSubj.disabled = false;
+    selSubj.selectedIndex = 1;
+    onSubjectChange();
+
+  } catch (err) {
+    console.error("Failed to load subjects", err);
+  }
+}
+
+function onSubjectChange() {
+  const selSubj = document.getElementById("sel-subject");
+  const subjId = selSubj.value;
+  if (!subjId) {
+    hideAllocationPanels();
+    return;
+  }
+
+  const selectedOpt = selSubj.options[selSubj.selectedIndex];
+  state.subjectId = parseInt(subjId);
+  state.subjectData = JSON.parse(selectedOpt.dataset.json);
+
+  // Render subject summary banner
+  document.getElementById("disp-course-code").textContent = state.subjectData.course_code;
+  document.getElementById("disp-subject-title").textContent = state.subjectData.title;
+  document.getElementById("disp-subject-meta").textContent = `Scheme: ${state.subjectData.scheme} • Course Type: ${state.subjectData.course_type} • Sem: ${state.subjectData.semester}`;
+  
+  const badgeEl = document.getElementById("disp-verification-badge");
+  badgeEl.innerHTML = `<span class="badge ${state.subjectData.is_verified ? 'badge-green' : 'badge-amber'}">${state.subjectData.badge_label}</span>`;
+  document.getElementById("subject-detail-banner").style.display = "flex";
+
+  // Enable handling count & total faculty controls
+  document.getElementById("sel-min-handled").disabled = false;
+  document.getElementById("sel-total-required").disabled = false;
+
+  triggerFacultyRecommendation();
+}
+
+function onMinHandledChange() {
+  state.minHandled = parseInt(document.getElementById("sel-min-handled").value);
+  triggerFacultyRecommendation();
+}
+
+function onTotalRequiredChange() {
+  state.totalRequired = parseInt(document.getElementById("sel-total-required").value);
+  triggerFacultyRecommendation();
+}
+
+
+// ─── 50:50 Parity Allocation Engine & Matching ────────────────────────────────
+async function triggerFacultyRecommendation() {
+  if (!state.subjectId) return;
+
+  state.minHandled = parseInt(document.getElementById("sel-min-handled").value || 3);
+  state.totalRequired = parseInt(document.getElementById("sel-total-required").value || 4);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/auto-select`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subject_id: state.subjectId,
+        min_handled: state.minHandled,
+        total_required: state.totalRequired
+      })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast("Evaluation Error", data.detail || "Error evaluating faculty recommendations.", "error");
+      return;
+    }
+
+    state.internalQuota = data.internal_quota;
+    state.externalQuota = data.external_quota;
+    state.selectedInternalIds = new Set(data.selected_internal_ids);
+    state.selectedExternalIds = new Set(data.selected_external_ids);
+    state.allInternalCandidates = data.all_internal_candidates;
+    state.allExternalCandidates = data.all_external_candidates;
+    state.requiresException = data.requires_exception;
+
+    // Render Quota Status
+    document.getElementById("quota-pill-internal").textContent = `Internal Quota: ${data.selected_internal.length} / ${data.internal_quota} (50%)`;
+    document.getElementById("quota-pill-external").textContent = `External Quota: ${data.selected_external.length} / ${data.external_quota} (50%)`;
+    document.getElementById("quota-pill-ratio").textContent = `Target: ${data.total_required} Setters (50:50 Parity)`;
+
+    // Shortage warning handling
+    const warningBox = document.getElementById("shortage-warning-box");
+    const exceptionBox = document.getElementById("exception-approval-box");
+
+    if (data.warnings && data.warnings.length > 0) {
+      warningBox.innerHTML = `<strong>Quota Notice:</strong><br/>` + data.warnings.map(w => `• ${w}`).join("<br/>");
+      warningBox.style.display = "block";
+      if (data.requires_exception) {
+        exceptionBox.style.display = "block";
+      } else {
+        exceptionBox.style.display = "none";
+      }
+    } else {
+      warningBox.style.display = "none";
+      exceptionBox.style.display = "none";
+    }
+
+    document.getElementById("parity-status-card").style.display = "block";
+    document.getElementById("section-internal-faculty").style.display = "block";
+    document.getElementById("section-external-faculty").style.display = "block";
+    document.getElementById("section-allocation-summary").style.display = "block";
+
+    renderInternalFacultyTable();
+    renderExternalFacultyTable();
+    updateAllocationSummary();
+
+  } catch (err) {
+    console.error("Failed to retrieve recommendations", err);
+  }
+}
+
+
+// ─── Faculty Tables Rendering ─────────────────────────────────────────────────
+function renderInternalFacultyTable() {
+  const tbody = document.getElementById("tbody-internal-faculty");
+  tbody.innerHTML = "";
+
+  state.allInternalCandidates.forEach(f => {
+    const tr = document.createElement("tr");
+    const isChecked = state.selectedInternalIds.has(f.faculty_id);
+    if (isChecked) tr.classList.add("row-selected");
+
+    let eligBadge = `<span class="badge badge-green">Qualified</span>`;
+    if (f.eligibility_status.includes("Cannot Verify")) {
+      eligBadge = `<span class="badge badge-amber">Verification Required</span>`;
+    } else if (f.eligibility_status.includes("Not Qualified")) {
+      eligBadge = `<span class="badge badge-red">Not Qualified</span>`;
+    }
+
+    let handledBadge = `<span class="badge badge-blue">${f.course_handled_display}</span>`;
+    if (!f.meets_min_handled) {
+      handledBadge = `<span class="badge badge-amber">${f.course_handled_display} (&lt; ${state.minHandled} min)</span>`;
+    }
+
+    tr.innerHTML = `
+      <td style="text-align:center;">
+        <input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleFacultySelection('internal', ${f.faculty_id}, this.checked)" />
+      </td>
+      <td><strong>${f.faculty_name}</strong><div style="font-size:11px; color:var(--text-muted);">${f.email || ''}</div></td>
+      <td>${f.designation || 'Faculty'}</td>
+      <td>${f.department || 'SJBIT'}</td>
+      <td>${f.qualification || 'M.Tech'}</td>
+      <td>${f.experience_years ? f.experience_years.toFixed(1) + ' Yrs' : 'N/A'}</td>
+      <td>${handledBadge}</td>
+      <td>${eligBadge}</td>
+      <td><strong style="color:var(--royal-blue); font-size:13px;">${f.total_score}</strong> / 100</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById("internal-quota-counter").textContent = `Selected: ${state.selectedInternalIds.size} / ${state.internalQuota}`;
+}
+
+function renderExternalFacultyTable() {
+  const tbody = document.getElementById("tbody-external-faculty");
+  tbody.innerHTML = "";
+
+  state.allExternalCandidates.forEach(f => {
+    const tr = document.createElement("tr");
+    const isChecked = state.selectedExternalIds.has(f.faculty_id);
+    if (isChecked) tr.classList.add("row-selected");
+
+    let eligBadge = `<span class="badge badge-green">Qualified</span>`;
+    if (f.eligibility_status.includes("Cannot Verify")) {
+      eligBadge = `<span class="badge badge-amber">Cannot Verify (undisclosed)</span>`;
+    } else if (f.eligibility_status.includes("Not Qualified")) {
+      eligBadge = `<span class="badge badge-red">Not Qualified</span>`;
+    }
+
+    // Provenance distinction: External dataset has assumed QP setting count, not verified course teaching count
+    let handledCell = `<span class="badge badge-amber" title="External university records do not publicly disclose subject teaching counts">Course History Verification Required</span>`;
+
+    tr.innerHTML = `
+      <td style="text-align:center;">
+        <input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleFacultySelection('external', ${f.faculty_id}, this.checked)" />
+      </td>
+      <td><strong>${f.faculty_name}</strong><div style="font-size:11px; color:var(--text-muted);">${f.email || 'Email in roster'}</div></td>
+      <td>${f.institution || 'External University'}</td>
+      <td>${f.designation || 'Faculty'}</td>
+      <td>${f.qualification || 'Ph.D / M.Tech'}</td>
+      <td>${f.experience_years ? f.experience_years.toFixed(1) + ' Yrs' : 'Undisclosed'}</td>
+      <td>${handledCell}</td>
+      <td>${eligBadge}</td>
+      <td><strong style="color:var(--royal-blue); font-size:13px;">${f.total_score}</strong> / 100</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById("external-quota-counter").textContent = `Selected: ${state.selectedExternalIds.size} / ${state.externalQuota}`;
+}
+
+function toggleFacultySelection(type, facultyId, isSelected) {
+  if (type === "internal") {
+    if (isSelected) state.selectedInternalIds.add(facultyId);
+    else state.selectedInternalIds.delete(facultyId);
+  } else {
+    if (isSelected) state.selectedExternalIds.add(facultyId);
+    else state.selectedExternalIds.delete(facultyId);
+  }
+
+  renderInternalFacultyTable();
+  renderExternalFacultyTable();
+  updateAllocationSummary();
+}
+
+function filterFacultyTable(type) {
+  const query = document.getElementById(`search-${type}-table`).value.toLowerCase();
+  const rows = document.querySelectorAll(`#tbody-${type}-faculty tr`);
+  rows.forEach(r => {
+    const text = r.innerText.toLowerCase();
+    r.style.display = text.includes(query) ? "" : "none";
+  });
+}
+
+
+// ─── Allocation Summary & Conflict Management ─────────────────────────────────
+async function updateAllocationSummary() {
+  document.getElementById("sum-disp-ay-sem").textContent = `${state.academicYear} • Sem ${state.semester}`;
+  document.getElementById("sum-disp-course").textContent = `${state.subjectData.course_code} - ${state.subjectData.title}`;
+  document.getElementById("sum-disp-handled").textContent = `${state.minHandled} Times Minimum`;
+
+  const intCount = state.selectedInternalIds.size;
+  const extCount = state.selectedExternalIds.size;
+  const total = intCount + extCount;
+  const ratio = total > 0 ? `${Math.round(intCount / total * 100)}% Int / ${Math.round(extCount / total * 100)}% Ext` : "0:0";
+  document.getElementById("sum-disp-ratio").textContent = `${ratio} (${total} of ${state.totalRequired} Setters)`;
+
+  // Render roster of appointed setters
+  const rosterDiv = document.getElementById("sum-roster-list");
+  rosterDiv.innerHTML = "";
+
+  let setLetterCode = 65; // 'A'
+
+  // Internal Setters
+  state.selectedInternalIds.forEach(id => {
+    const f = state.allInternalCandidates.find(c => c.faculty_id === id);
+    if (f) {
+      const item = document.createElement("div");
+      item.className = "setter-item";
+      item.innerHTML = `
+        <div>
+          <strong>Set ${String.fromCharCode(setLetterCode++)}: ${f.faculty_name}</strong>
+          <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">(${f.designation}, SJBIT)</span>
+        </div>
+        <span class="badge badge-blue">Internal Setter</span>
+      `;
+      rosterDiv.appendChild(item);
+    }
+  });
+
+  // External Setters
+  state.selectedExternalIds.forEach(id => {
+    const f = state.allExternalCandidates.find(c => c.faculty_id === id);
+    if (f) {
+      const item = document.createElement("div");
+      item.className = "setter-item";
+      item.innerHTML = `
+        <div>
+          <strong>Set ${String.fromCharCode(setLetterCode++)}: ${f.faculty_name}</strong>
+          <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">(${f.designation}, ${f.institution})</span>
+        </div>
+        <span class="badge badge-green">External Setter</span>
+      `;
+      rosterDiv.appendChild(item);
+    }
+  });
+
+  // Run real-time Conflict Check
+  const conflictAlert = document.getElementById("summary-conflict-alert");
+  const submitBtn = document.getElementById("btn-final-submit");
+  const complianceBadge = document.getElementById("summary-compliance-badge");
+
+  if (total === 0) {
+    conflictAlert.style.display = "none";
+    submitBtn.disabled = true;
+    complianceBadge.innerHTML = `<span class="badge badge-amber">No Faculty Selected</span>`;
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/check-conflicts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subject_id: state.subjectId,
+        internal_faculty_ids: Array.from(state.selectedInternalIds),
+        external_faculty_ids: Array.from(state.selectedExternalIds),
+        total_required: state.totalRequired
+      })
+    });
+    const conflictData = await res.json();
+
+    if (conflictData.has_conflicts) {
+      const critical = conflictData.conflicts.filter(c => c.severity === "Critical");
+      conflictAlert.innerHTML = `<strong>Conflict Detected:</strong><br/>` + conflictData.conflicts.map(c => `• [${c.severity}] ${c.description}`).join("<br/>");
+      conflictAlert.style.display = "block";
+
+      if (critical.length > 0) {
+        submitBtn.disabled = true;
+        complianceBadge.innerHTML = `<span class="badge badge-red">Critical Conflict</span>`;
+        return;
+      }
+    } else {
+      conflictAlert.style.display = "none";
+    }
+
+    const quotaSatisfied = (intCount === state.internalQuota && extCount === state.externalQuota);
+    if (quotaSatisfied) {
+      complianceBadge.innerHTML = `<span class="badge badge-green">✓ 50:50 Quota Satisfied</span>`;
+      document.getElementById("section-allocation-summary").classList.add("parity-satisfied");
+    } else {
+      complianceBadge.innerHTML = `<span class="badge badge-amber">Quota Adjustment Required</span>`;
+      document.getElementById("section-allocation-summary").classList.remove("parity-satisfied");
+    }
+
+    submitBtn.disabled = false;
+
+  } catch (err) {
+    console.error("Conflict checking error", err);
+  }
+}
+
+function applyExceptionReason() {
+  const reason = document.getElementById("input-exception-reason").value.trim();
+  if (!reason) {
+    showToast("Validation Error", "Please provide an administrative justification note.", "warning");
+    return;
+  }
+  state.exceptionReason = reason;
+  showToast("Justification Recorded", "Exception reason recorded. You may now proceed with final submission.", "info");
+}
+
+
+// ─── Final Submission & Order Confirmation ────────────────────────────────────
+async function executeFinalAllocationSubmission() {
+  if (state.selectedInternalIds.size === 0 && state.selectedExternalIds.size === 0) {
+    showToast("Selection Required", "Please select at least one faculty member.", "warning");
+    return;
+  }
+
+  // Check if unverified external faculty are selected without recorded exception
+  const selectedExtList = state.allExternalCandidates.filter(f => state.selectedExternalIds.has(f.faculty_id));
+  const hasUnverifiedExt = selectedExtList.some(f => f.eligibility_status.includes("Cannot Verify"));
+
+  if (hasUnverifiedExt && !state.exceptionReason) {
+    const promptReason = prompt("Administrative Approval Required:\nOne or more selected external faculty have unverified teaching experience.\nPlease enter an authorized exception note:", "Approved by Controller of Examinations after physical review of service record");
+    if (!promptReason) {
+      showToast("Submission Aborted", "Exception justification is mandatory for unverified external faculty.", "warning");
+      return;
+    }
+    state.exceptionReason = promptReason;
+  }
+
+  const btn = document.getElementById("btn-final-submit");
+  btn.disabled = true;
+  btn.textContent = "LOCKING ALLOCATION & GENERATING ORDER...";
+
+  try {
+    const payload = {
+      subject_id: state.subjectId,
+      academic_year: state.academicYear,
+      department: state.department,
+      semester: state.semester,
+      min_handled: state.minHandled,
+      total_required: state.totalRequired,
+      internal_faculty_ids: Array.from(state.selectedInternalIds),
+      external_faculty_ids: Array.from(state.selectedExternalIds),
+      exception_reason: state.exceptionReason || null,
+      exception_approved_by: "Controller of Examinations",
+      submission_deadline: "Within 10 days of order receipt"
+    };
+
+    const res = await fetch(`${API_BASE}/api/allocation/confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const result = await res.json();
+
+    if (!res.ok) {
+      showToast("Confirmation Failed", result.detail || "Failed to confirm allocation.", "error");
+      btn.disabled = false;
+      btn.textContent = "FINAL SUBMIT & GENERATE ALLOCATION →";
+      return;
+    }
+
+    state.lastAllocationId = result.allocation_id;
+    state.lastRefNumber = result.reference_number;
+
+    // Show Success Modal
+    document.getElementById("modal-ref-number").textContent = result.reference_number;
+    document.getElementById("success-modal").classList.add("active");
+
+    btn.disabled = false;
+    btn.textContent = "FINAL SUBMIT & GENERATE ALLOCATION →";
+
+  } catch (err) {
+    showToast("Network Error", "Error executing allocation submission.", "error");
+    btn.disabled = false;
+    btn.textContent = "FINAL SUBMIT & GENERATE ALLOCATION →";
+  }
+}
+
+function triggerModalPDFDownload() {
+  if (state.lastAllocationId) {
+    window.open(`${API_BASE}/api/reports/download-pdf/${state.lastAllocationId}`, "_blank");
+  }
+}
+
+function closeSuccessModal() {
+  document.getElementById("success-modal").classList.remove("active");
+  // Reload dashboard
+  onSubjectChange();
+}
+
+
+// ─── Faculty OTP Dispatch & Popup Notification ─────────────────────────────────
+async function handleSendFacultyOTP() {
+  const allSelectedIds = [...state.selectedInternalIds, ...state.selectedExternalIds];
+  if (allSelectedIds.length === 0) {
+    showToast("Selection Required", "Please select at least one faculty member before dispatching OTP.", "warning");
+    return;
+  }
+  if (!state.subjectId) {
+    showToast("Subject Required", "Please select a subject first.", "warning");
+    return;
+  }
+
+  const btn = document.getElementById("btn-send-faculty-otp");
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Dispatching OTP...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/send-faculty-otp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        subject_id: state.subjectId,
+        faculty_ids: allSelectedIds
+      })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast("Dispatch Failed", data.detail || "Failed to dispatch faculty OTP.", "error");
+      btn.disabled = false;
+      btn.textContent = origText;
+      return;
+    }
+
+    // Populate modal content
+    const modalContent = document.getElementById("faculty-otp-modal-content");
+    modalContent.innerHTML = "";
+
+    data.dispatches.forEach(d => {
+      const item = document.createElement("div");
+      item.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:8px; border-bottom:1px solid #e2e8f0; font-size:12.5px;";
+      item.innerHTML = `
+        <div>
+          <strong>${d.faculty_name}</strong> <span style="font-size:11px; color:var(--text-muted);">(${d.faculty_type === 'internal' ? 'SJBIT Internal' : 'External'})</span><br/>
+          <span style="font-size:11.5px; color:#4b5563;">📧 ${d.email_masked} | 📱 ${d.mobile_masked}</span>
+        </div>
+        <div style="text-align:right;">
+          <span class="badge badge-green" style="font-size:11.5px; font-weight:600;">✓ Verification Dispatched</span><br/>
+          <span style="font-size:10.5px; color:var(--text-muted);">Directly to Faculty Device</span>
+        </div>
+      `;
+      modalContent.appendChild(item);
+    });
+
+    // Show the modal
+    document.getElementById("faculty-otp-modal").classList.add("active");
+
+  } catch (err) {
+    showToast("Network Error", "Error communicating with server while sending OTP.", "error");
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+function closeFacultyOtpModal() {
+  document.getElementById("faculty-otp-modal").classList.remove("active");
+}
+
+
+// ─── Module 2: Excel Dataset Upload & History ─────────────────────────────────
+let currentImportPreview = null;
+
+async function handleExcelPreview() {
+  const fileInput = document.getElementById("upload-excel-file");
+  const datasetType = document.getElementById("upload-dataset-type").value;
+  const statusBox = document.getElementById("upload-status-box");
+  const btn = document.getElementById("btn-preview-import");
+
+  if (!fileInput.files || fileInput.files.length === 0) {
+    showToast("File Required", "Please select an Excel (.xlsx) file to upload.", "warning");
+    return;
+  }
+
+  const file = fileInput.files[0];
+  if (file.size > 10 * 1024 * 1024) {
+    showToast("File Too Large", "Maximum permitted workbook size is 10MB.", "error");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("dataset_type", datasetType);
+
+  btn.disabled = true;
+  btn.textContent = "Analyzing Workbook...";
+  statusBox.style.display = "block";
+  statusBox.innerHTML = `<span style="color:var(--royal-blue); font-weight:600;">Validating workbook headers, checking for duplicates, and inspecting conflicts...</span>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/import-preview`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` },
+      body: formData
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusBox.innerHTML = `<span style="color:var(--error-red); font-weight:600;">Validation Failed: ${escapeHtml(data.detail || 'Failed to process file')}</span>`;
+      document.getElementById("import-preview-container").style.display = "none";
+      return;
+    }
+
+    currentImportPreview = data;
+    statusBox.style.display = "none";
+
+    // Populate preview stats
+    document.getElementById("preview-file-subtitle").textContent = `File: ${data.filename} (${data.dataset_type.toUpperCase()}) • Evaluated ${data.total_rows} row(s)`;
+    document.getElementById("pv-stat-total").textContent = data.total_rows;
+    document.getElementById("pv-stat-add").textContent = data.to_add_count;
+    document.getElementById("pv-stat-dup").textContent = data.duplicate_count;
+    document.getElementById("pv-stat-conflict").textContent = data.conflict_count;
+    document.getElementById("pv-stat-rej").textContent = data.rejected_count;
+
+    // Render Preview Details Area
+    const detailsArea = document.getElementById("preview-details-area");
+    let html = "";
+
+    // If conflicts exist, show table
+    if (data.conflicts && data.conflicts.length > 0) {
+      html += `
+        <div style="margin-bottom:16px;">
+          <h4 style="font-size:13.5px; font-weight:700; color:#B45309; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+            ⚠️ Conflicting Records (${data.conflicts.length}):
+          </h4>
+          <div style="max-height:220px; overflow-y:auto; border:1px solid #FDE68A; border-radius:6px; background:#FFFBEB; padding:8px 12px; font-size:12px;">
+            <table style="width:100%; border-collapse:collapse;">
+              <thead>
+                <tr style="text-align:left; border-bottom:1px solid #FDE68A; color:#92400E;">
+                  <th style="padding:4px;">Row</th>
+                  <th style="padding:4px;">Identifier</th>
+                  <th style="padding:4px;">Conflicting Field</th>
+                  <th style="padding:4px;">Existing in Database</th>
+                  <th style="padding:4px;">Incoming in Workbook</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.conflicts.map(c => c.diffs.map(d => `
+                  <tr style="border-bottom:1px solid #FEF3C7;">
+                    <td style="padding:4px; font-weight:600;">#${c.row}</td>
+                    <td style="padding:4px;"><strong>${escapeHtml(c.identifier)}</strong></td>
+                    <td style="padding:4px; color:#B45309;">${escapeHtml(d.field)}</td>
+                    <td style="padding:4px; color:#1E293B;">${escapeHtml(String(d.existing || '—'))}</td>
+                    <td style="padding:4px; color:#0369A1;">${escapeHtml(String(d.incoming || '—'))}</td>
+                  </tr>
+                `).join("")).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    // If rejected rows exist, show table
+    if (data.rejected && data.rejected.length > 0) {
+      html += `
+        <div style="margin-bottom:16px;">
+          <h4 style="font-size:13.5px; font-weight:700; color:#DC2626; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+            ✕ Rejected Records (${data.rejected.length}):
+          </h4>
+          <div style="max-height:180px; overflow-y:auto; border:1px solid #FECACA; border-radius:6px; background:#FEF2F2; padding:8px 12px; font-size:12px;">
+            <table style="width:100%; border-collapse:collapse;">
+              <thead>
+                <tr style="text-align:left; border-bottom:1px solid #FECACA; color:#991B1B;">
+                  <th style="padding:4px; width:60px;">Row</th>
+                  <th style="padding:4px;">Identifier</th>
+                  <th style="padding:4px;">Statutory Rejection Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.rejected.map(r => `
+                  <tr style="border-bottom:1px solid #FEE2E2;">
+                    <td style="padding:4px; font-weight:600;">#${r.row}</td>
+                    <td style="padding:4px;">${escapeHtml(r.identifier)}</td>
+                    <td style="padding:4px; color:#DC2626;">${escapeHtml(r.reason)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    // Sample of rows to add
+    if (data.to_add_sample && data.to_add_sample.length > 0) {
+      html += `
+        <div>
+          <h4 style="font-size:13.5px; font-weight:700; color:#059669; margin-bottom:8px;">
+            ✓ Sample Rows to Add (${data.to_add_count} total):
+          </h4>
+          <div style="font-size:12px; color:var(--text-dark); background:#F0FDF4; border:1px solid #BBF7D0; border-radius:6px; padding:10px 14px; max-height:160px; overflow-y:auto;">
+            ${data.to_add_sample.map(a => `
+              <div style="padding:3px 0; border-bottom:1px solid #DCFCE7;">
+                <strong>${escapeHtml(a.name || a.title)}</strong> (${escapeHtml(a.department || "")})
+                ${a.qualification ? `— <span class="text-muted">${escapeHtml(a.qualification)}</span>` : ""}
+                ${a.experience_years !== null && a.experience_years !== undefined ? `— <span class="badge badge-verified" style="font-size:10px;">${a.experience_years} yrs</span>` : ""}
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
+    if (!html) {
+      html = `<div style="text-align:center; padding:14px; color:var(--text-muted); font-size:13px;">All ${data.total_rows} row(s) evaluated as exact duplicates of existing records. No new data will be added.</div>`;
+    }
+
+    detailsArea.innerHTML = html;
+    document.getElementById("import-preview-container").style.display = "block";
+    showToast("Dry-Run Complete", `Analyzed ${data.total_rows} row(s). Review breakdown and confirm.`, "info");
+
+  } catch (err) {
+    statusBox.innerHTML = `<span style="color:var(--error-red);">Upload inspection request failed.</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔍 Preview & Validate";
+  }
+}
+
+async function handleConfirmImport() {
+  if (!currentImportPreview || !currentImportPreview.preview_id) {
+    showToast("No Preview", "Please preview an Excel file first.", "warning");
+    return;
+  }
+
+  const btn = document.getElementById("btn-confirm-import");
+  const resolution = document.getElementById("preview-conflict-resolution")?.value || "preserve_existing";
+
+  btn.disabled = true;
+  btn.textContent = "Saving to Database...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/import-confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        preview_id: currentImportPreview.preview_id,
+        conflict_resolution: resolution
+      })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast("Import Failed", data.detail || "Could not confirm import.", "error");
+      return;
+    }
+
+    showToast(
+      "Import Confirmed",
+      `Saved ${data.added_count} new record(s), ${data.duplicate_count} duplicates skipped, ${data.conflict_count} conflicts (${data.conflict_resolution}).`,
+      "success"
+    );
+
+    document.getElementById("import-preview-container").style.display = "none";
+    document.getElementById("upload-excel-file").value = "";
+    currentImportPreview = null;
+
+    await loadImportHistory();
+    if (state.currentUser && state.currentUser.role === "Admin") {
+      await loadDashboardStats();
+    }
+  } catch (err) {
+    showToast("Network Error", "Could not complete import confirmation.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "✓ Confirm & Save Import";
+  }
+}
+
+async function handleDownloadRejectedReport() {
+  if (!currentImportPreview || !currentImportPreview.preview_id) {
+    showToast("No Preview", "No active preview session to download report for.", "warning");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/import-rejected-report/${currentImportPreview.preview_id}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Download Failed", err.detail || "Could not generate report.", "error");
+      return;
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rejected_report_${currentImportPreview.dataset_type}_${currentImportPreview.preview_id.substring(0, 8)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    showToast("Report Downloaded", "Protected rejection and conflict report downloaded.", "success");
+  } catch (e) {
+    showToast("Network Error", "Failed to download report file.", "error");
+  }
+}
+
+function handleCancelPreview() {
+  document.getElementById("import-preview-container").style.display = "none";
+  document.getElementById("upload-excel-file").value = "";
+  currentImportPreview = null;
+}
+
+async function handleExcelUpload() {
+  await handleExcelPreview();
+}
+
+async function loadImportHistory() {
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/import-history`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const tbody = document.getElementById("tbody-import-history");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+
+    if (!data.history || data.history.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📁</div><div class="empty-state-title">No Import History</div><div class="empty-state-desc">Uploaded dataset workbooks and file verification hashes will appear here.</div></div></td></tr>`;
+      return;
+    }
+
+    data.history.forEach(h => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${h.imported_at ? h.imported_at.replace('T', ' ').substring(0, 19) : '—'}</td>
+        <td><strong>${escapeHtml(h.file_name)}</strong></td>
+        <td><span class="badge badge-blue">${escapeHtml(h.file_type.toUpperCase())}</span></td>
+        <td><span style="font-weight:600; color:var(--text-dark);">${escapeHtml(h.imported_by || 'Admin')}</span></td>
+        <td>${h.total_rows}</td>
+        <td><strong style="color:var(--success-green);">${h.valid_rows}</strong></td>
+        <td>${h.duplicate_rows}</td>
+        <td><span style="color:${h.conflicts_count > 0 ? '#D97706' : 'var(--text-muted)'}; font-weight:600;">${h.conflicts_count || 0}</span></td>
+        <td><span style="color:${h.skipped_rows > 0 ? 'var(--error-red)' : 'var(--text-muted)'};">${h.skipped_rows}</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    console.error("Failed to load import history:", e);
+  }
+}
+
+
+// ─── Module 3: Allocation Records Archive ─────────────────────────────────────
+async function loadAllocationHistory() {
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/history`);
+    const data = await res.json();
+    const tbody = document.getElementById("tbody-allocation-history");
+    tbody.innerHTML = "";
+
+    if (!data.allocations || data.allocations.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📜</div><div class="empty-state-title">No Allocation Orders Yet</div><div class="empty-state-desc">Generated and confirmed question paper setter orders will appear here.</div></div></td></tr>`;
+      return;
+    }
+
+    data.allocations.forEach(a => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><strong>${a.reference_number}</strong></td>
+        <td>${a.academic_year}</td>
+        <td>${a.department}</td>
+        <td>${a.semester}</td>
+        <td>${a.course_code} - ${a.subject_title}</td>
+        <td>${a.total_required}</td>
+        <td><span class="badge badge-blue">${a.allocation_ratio}</span></td>
+        <td><span class="badge ${a.status === 'Confirmed' ? 'badge-green' : 'badge-red'}">${a.status}</span></td>
+        <td>
+          <a href="/api/reports/download-pdf/${a.id}" target="_blank" class="btn btn-secondary btn-sm" style="padding:4px 8px; font-size:11px;">
+            📄 PDF Order
+          </a>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {}
+}
+
+
+// ─── Module 4: Notifications Log ──────────────────────────────────────────────
+async function loadNotifications() {
+  try {
+    const res = await fetch(`${API_BASE}/api/reports/notifications`);
+    const data = await res.json();
+    const tbody = document.getElementById("tbody-notifications");
+    tbody.innerHTML = "";
+
+    if (!data.notifications || data.notifications.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-state-icon">📬</div><div class="empty-state-title">No Notification Logs</div><div class="empty-state-desc">Email and SMS dispatch logs prepared for appointed setters will be recorded here.</div></div></td></tr>`;
+      return;
+    }
+
+    data.notifications.forEach(n => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${n.sent_at.replace('T', ' ').substring(0, 19)}</td>
+        <td><span class="badge ${n.channel === 'Email' ? 'badge-blue' : 'badge-amber'}">${n.channel}</span></td>
+        <td><strong>${n.faculty_name}</strong></td>
+        <td><code>${n.recipient}</code></td>
+        <td style="max-width:320px; font-size:11.5px;">${n.message_preview}</td>
+        <td><span class="badge badge-green">${n.status}</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {}
+}
+
+
+// ─── Module 5: Security Audit Registry ────────────────────────────────────────
+async function loadAuditLogs() {
+  try {
+    const res = await fetch(`${API_BASE}/api/reports/audit-logs`);
+    const data = await res.json();
+    const tbody = document.getElementById("tbody-audit");
+    tbody.innerHTML = "";
+
+    if (!data.logs || data.logs.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4"><div class="empty-state"><div class="empty-state-icon">🛡️</div><div class="empty-state-title">No Audit Logs</div><div class="empty-state-desc">Administrative actions and security events will be recorded here.</div></div></td></tr>`;
+      return;
+    }
+
+    data.logs.forEach(l => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${l.performed_at.replace('T', ' ').substring(0, 19)}</td>
+        <td><strong>${l.action}</strong></td>
+        <td><span class="badge badge-blue">${l.entity_type}</span></td>
+        <td style="font-size:12px;">${l.details}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {}
+}
+
+
+// ─── Module 6: Institutional Policy Settings ──────────────────────────────────
+async function loadPolicySettings() {
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/rules`);
+    const data = await res.json();
+    document.getElementById("cfg-min-exp").value = data.min_experience_years;
+    document.getElementById("cfg-phd-exp").value = data.phd_fasttrack_min_exp;
+    document.getElementById("cfg-max-papers").value = data.max_papers_per_faculty;
+    document.getElementById("cfg-active-cycle").value = data.active_academic_year;
+  } catch (e) {}
+}
+
+async function savePolicySettings() {
+  const payload = {
+    min_experience_years: parseFloat(document.getElementById("cfg-min-exp").value),
+    phd_fasttrack_min_exp: parseFloat(document.getElementById("cfg-phd-exp").value),
+    max_papers_per_faculty: parseInt(document.getElementById("cfg-max-papers").value),
+    require_parity: true,
+    active_academic_year: document.getElementById("cfg-active-cycle").value.trim(),
+    upcoming_academic_year: "2026-27"
+  };
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/rules`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      showToast("Policies Updated", "Institutional policies successfully saved and signed into audit trail.", "success");
+      loadAcademicYears();
+    } else {
+      showToast("Update Failed", "Failed to update institutional policy settings.", "error");
+    }
+  } catch (e) {
+    showToast("Network Error", "Could not connect to server to update policies.", "error");
+  }
+}
+
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function resetDropdown(id, placeholder) {
+  const el = document.getElementById(id);
+  el.innerHTML = `<option value="">${placeholder}</option>`;
+  el.disabled = true;
+}
+
+function disableControls(ids) {
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = true;
+  });
+}
+
+function hideAllocationPanels() {
+  document.getElementById("subject-detail-banner").style.display = "none";
+  document.getElementById("parity-status-card").style.display = "none";
+  document.getElementById("section-internal-faculty").style.display = "none";
+  document.getElementById("section-external-faculty").style.display = "none";
+  document.getElementById("section-allocation-summary").style.display = "none";
+}
+
+
+// ─── Module 4: Admin Dashboard Stats & User Management ─────────────────────────
+async function loadDashboardStats() {
+  if (!state.token || !state.currentUser || state.currentUser.role !== "Admin") return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/dashboard-stats`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const elInt = document.getElementById("dash-stat-internal");
+    const elExt = document.getElementById("dash-stat-external");
+    const elUnv = document.getElementById("dash-stat-unverified");
+    const elSub = document.getElementById("dash-stat-subjects");
+    const elAllocTot = document.getElementById("dash-stat-alloc-total");
+    const elAllocBreak = document.getElementById("dash-stat-alloc-breakdown");
+    const elUsersTot = document.getElementById("dash-stat-users-total");
+    const elUsersBreak = document.getElementById("dash-stat-users-breakdown");
+
+    if (elInt) elInt.textContent = data.faculty.internal_count;
+    if (elExt) elExt.textContent = data.faculty.external_count;
+    if (elUnv) elUnv.textContent = data.faculty.pending_verification_count;
+    if (elSub) elSub.textContent = data.syllabus.total_subjects_count;
+    if (elAllocTot) elAllocTot.textContent = data.allocations.total_allocations;
+    if (elAllocBreak) {
+      const bs = data.allocations.by_status;
+      elAllocBreak.textContent = `Draft: ${bs.Draft || 0} | Confirmed: ${bs.Confirmed || 0} | Pending: ${bs["Pending HOD Approval"] || 0}`;
+    }
+    if (elUsersTot) elUsersTot.textContent = data.users.total_users;
+    if (elUsersBreak) {
+      elUsersBreak.textContent = `Active: ${data.users.active_users} | Locked: ${data.users.locked_users}`;
+    }
+  } catch (err) {
+    console.error("Failed to load dashboard stats:", err);
+  }
+}
+
+state.allUsers = [];
+
+async function loadUsersList() {
+  if (!state.token || !state.currentUser || state.currentUser.role !== "Admin") return;
+  const tbody = document.getElementById("users-table-body");
+  if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 24px; color:var(--text-muted);"><span class="spinner-sm"></span> Loading institutional users...</td></tr>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Access Denied", err.detail || "Could not retrieve user roster.", "error");
+      if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--error-red); padding: 20px;">Failed to load users: ${err.detail || "Forbidden"}</td></tr>`;
+      return;
+    }
+    const data = await res.json();
+    state.allUsers = data.users || [];
+    renderUsersTable(state.allUsers);
+  } catch (err) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--error-red); padding: 20px;">Network error loading users.</td></tr>`;
+  }
+}
+
+function renderUsersTable(users) {
+  const tbody = document.getElementById("users-table-body");
+  if (!tbody) return;
+
+  if (!users || users.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 30px; color:var(--text-muted);">No institutional users found matching filters.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = users.map(u => {
+    const roleBadge = u.role === "Admin" ? "badge-role-admin" : (u.role === "HOD" ? "badge-role-hod" : "badge-role-faculty");
+    const activeBadge = u.is_active ? `<span class="badge badge-verified">Active</span>` : `<span class="badge badge-unverified">Inactive</span>`;
+    const lockBadge = u.is_locked ? `<span class="badge badge-unverified" style="margin-left:4px;">🔒 Locked</span>` : "";
+    const lastLogin = u.last_login_at ? new Date(u.last_login_at).toLocaleString() : "Never";
+
+    const isSelf = state.currentUser && state.currentUser.id === u.id;
+
+    return `
+      <tr>
+        <td style="color:var(--text-muted); font-size:11px;">#${u.id}</td>
+        <td>
+          <div style="font-weight:600; color:var(--primary-navy);">${escapeHtml(u.full_name || u.username)}</div>
+          <div style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(u.username)}</div>
+        </td>
+        <td>
+          <div>${escapeHtml(u.email)}</div>
+          <div style="font-size:11px; color:var(--text-muted);">${escapeHtml(u.phone || "—")}</div>
+        </td>
+        <td><span class="badge-role ${roleBadge}">${u.role}</span></td>
+        <td><strong>${escapeHtml(u.department || "System-wide")}</strong></td>
+        <td>
+          <div style="display:flex; align-items:center;">
+            ${activeBadge}
+            ${lockBadge}
+          </div>
+        </td>
+        <td style="text-align:center; font-family:var(--font-mono); font-size:11.5px;">${u.failed_attempts || 0}</td>
+        <td style="font-size:11.5px; color:var(--text-muted);">${lastLogin}</td>
+        <td style="text-align: right;">
+          <div style="display:inline-flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+            <button class="btn-xs btn-xs-primary" onclick="openEditUserModal(${u.id})">Edit</button>
+            ${u.is_locked ? `<button class="btn-xs btn-xs-warning" onclick="handleUnlockUser(${u.id}, '${escapeHtml(u.username)}')">Unlock</button>` : ""}
+            <button class="btn-xs btn-xs-warning" onclick="openAdminResetModal(${u.id}, '${escapeHtml(u.username)}')">Reset Pwd</button>
+            ${!isSelf ? `
+              <button class="btn-xs ${u.is_active ? 'btn-xs-danger' : 'btn-xs-success'}" onclick="handleToggleUserActive(${u.id}, '${escapeHtml(u.username)}', ${u.is_active})">
+                ${u.is_active ? 'Deactivate' : 'Activate'}
+              </button>
+            ` : `<span style="font-size:10.5px; color:var(--text-muted); padding:4px;">(Self)</span>`}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function filterUsersTable() {
+  const search = (document.getElementById("user-filter-search")?.value || "").toLowerCase().trim();
+  const role = document.getElementById("user-filter-role")?.value || "";
+  const dept = document.getElementById("user-filter-dept")?.value || "";
+
+  let filtered = state.allUsers || [];
+  if (role) filtered = filtered.filter(u => u.role === role);
+  if (dept) filtered = filtered.filter(u => u.department === dept);
+  if (search) {
+    filtered = filtered.filter(u =>
+      (u.username && u.username.toLowerCase().includes(search)) ||
+      (u.full_name && u.full_name.toLowerCase().includes(search)) ||
+      (u.email && u.email.toLowerCase().includes(search))
+    );
+  }
+  renderUsersTable(filtered);
+}
+
+function onRoleChange(prefix) {
+  const roleEl = document.getElementById(`${prefix}-role`);
+  const deptGroup = document.getElementById(`${prefix}-dept-group`);
+  if (!roleEl || !deptGroup) return;
+
+  if (roleEl.value === "Admin") {
+    deptGroup.style.opacity = "0.4";
+  } else {
+    deptGroup.style.opacity = "1";
+  }
+}
+
+// ─── Create User Modal & Action Handlers ───────────────────────────────────────
+function openCreateUserModal() {
+  const form = document.getElementById("form-create-user");
+  if (form) form.reset();
+  onRoleChange('cu');
+  document.getElementById("modal-create-user").style.display = "flex";
+}
+
+function closeCreateUserModal() {
+  document.getElementById("modal-create-user").style.display = "none";
+}
+
+async function handleCreateUser(e) {
+  e.preventDefault();
+  const username = document.getElementById("cu-username").value.trim();
+  const full_name = document.getElementById("cu-fullname").value.trim();
+  const email = document.getElementById("cu-email").value.trim();
+  const phone = document.getElementById("cu-phone").value.trim();
+  const role = document.getElementById("cu-role").value;
+  const dept = document.getElementById("cu-dept").value;
+  const password = document.getElementById("cu-password").value;
+
+  if (role !== "Admin" && !dept) {
+    showToast("Validation Error", "Department is mandatory for HOD and Faculty accounts.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("btn-submit-create-user");
+  btn.disabled = true;
+  btn.textContent = "Creating...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        username,
+        full_name,
+        email,
+        phone: phone || null,
+        role,
+        department: role === "Admin" ? null : dept,
+        password
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("User Created", `Account '${username}' has been successfully created.`, "success");
+      closeCreateUserModal();
+      await loadUsersList();
+      await loadDashboardStats();
+    } else {
+      showToast("Creation Failed", data.detail || "Could not create user account.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to connect to authentication server.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Create User Account";
+  }
+}
+
+// ─── Edit User Modal & Action Handlers ─────────────────────────────────────────
+function openEditUserModal(userId) {
+  const user = (state.allUsers || []).find(u => u.id === userId);
+  if (!user) return;
+
+  document.getElementById("eu-id").value = user.id;
+  document.getElementById("eu-username").value = user.username;
+  document.getElementById("eu-email").value = user.email;
+  document.getElementById("eu-fullname").value = user.full_name || "";
+  document.getElementById("eu-phone").value = user.phone || "";
+  document.getElementById("eu-role").value = user.role;
+  document.getElementById("eu-dept").value = user.department || "";
+  document.getElementById("eu-active").checked = user.is_active;
+
+  onRoleChange('eu');
+  document.getElementById("modal-edit-user").style.display = "flex";
+}
+
+function closeEditUserModal() {
+  document.getElementById("modal-edit-user").style.display = "none";
+}
+
+async function handleUpdateUser(e) {
+  e.preventDefault();
+  const userId = document.getElementById("eu-id").value;
+  const full_name = document.getElementById("eu-fullname").value.trim();
+  const phone = document.getElementById("eu-phone").value.trim();
+  const role = document.getElementById("eu-role").value;
+  const dept = document.getElementById("eu-dept").value;
+  const is_active = document.getElementById("eu-active").checked;
+
+  const btn = document.getElementById("btn-submit-edit-user");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users/${userId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        full_name,
+        phone: phone || null,
+        role,
+        department: role === "Admin" ? null : dept,
+        is_active
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("User Updated", "Account changes saved successfully.", "success");
+      closeEditUserModal();
+      await loadUsersList();
+      await loadDashboardStats();
+    } else {
+      showToast("Update Failed", data.detail || "Could not save user changes.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to communicate with administration server.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save Changes";
+  }
+}
+
+// ─── Unlock User Handler ──────────────────────────────────────────────────────
+async function handleUnlockUser(userId, username) {
+  if (!confirm(`Are you sure you want to unlock user account '${username}' and reset failed attempts?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users/${userId}/unlock`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Account Unlocked", `User '${username}' has been unlocked.`, "success");
+      await loadUsersList();
+      await loadDashboardStats();
+    } else {
+      showToast("Unlock Failed", data.detail || "Could not unlock account.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to unlock account.", "error");
+  }
+}
+
+// ─── Admin Password Reset Handlers ────────────────────────────────────────────
+function openAdminResetModal(userId, username) {
+  document.getElementById("arp-id").value = userId;
+  document.getElementById("arp-target-username").textContent = username;
+  document.getElementById("arp-new-pwd").value = "";
+  document.getElementById("arp-confirm-pwd").value = "";
+  document.getElementById("modal-admin-reset-pwd").style.display = "flex";
+}
+
+function closeAdminResetModal() {
+  document.getElementById("modal-admin-reset-pwd").style.display = "none";
+}
+
+async function handleAdminResetPassword(e) {
+  e.preventDefault();
+  const userId = document.getElementById("arp-id").value;
+  const newPwd = document.getElementById("arp-new-pwd").value;
+  const confirmPwd = document.getElementById("arp-confirm-pwd").value;
+
+  if (newPwd !== confirmPwd) {
+    showToast("Validation Error", "New password and confirmation do not match.", "error");
+    return;
+  }
+  if (newPwd.length < 8) {
+    showToast("Validation Error", "Password must be at least 8 characters long.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("btn-submit-admin-reset");
+  btn.disabled = true;
+  btn.textContent = "Resetting...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users/${userId}/reset-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({ new_password: newPwd })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Password Reset", data.message || "Password updated successfully.", "success");
+      closeAdminResetModal();
+      await loadUsersList();
+    } else {
+      showToast("Reset Failed", data.detail || "Could not reset password.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to reset password.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Reset Password";
+  }
+}
+
+// ─── Activate / Deactivate Toggle Handler ─────────────────────────────────────
+async function handleToggleUserActive(userId, username, currentActive) {
+  const action = currentActive ? "deactivate" : "activate";
+  const promptMsg = currentActive
+    ? `Deactivate account '${username}'? The user will be immediately logged out and blocked from signing in.`
+    : `Reactivate account '${username}'?`;
+
+  if (!confirm(promptMsg)) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users/${userId}/${action}`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(currentActive ? "User Deactivated" : "User Reactivated", data.message || `Account updated successfully.`, "info");
+      await loadUsersList();
+      await loadDashboardStats();
+    } else {
+      showToast("Action Failed", data.detail || `Could not ${action} user.`, "error");
+    }
+  } catch (err) {
+    showToast("Network Error", `Failed to ${action} user account.`, "error");
+  }
+}
+
+
+// ─── Module 5: Academic Subject Master & Curriculum Catalog ──────────────────
+state.allSubjects = [];
+
+async function loadSubjectMasterList() {
+  if (!state.token) return;
+  const tbody = document.getElementById("subjects-table-body");
+  if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 24px; color:var(--text-muted);"><span class="spinner-sm"></span> Loading syllabus subjects...</td></tr>`;
+
+  try {
+    let url = `${API_BASE}/api/syllabus/all`;
+    // If HOD or Faculty, server will enforce scoping, but we pass current UI filters
+    const params = new URLSearchParams();
+    const ay = document.getElementById("subj-filter-ay")?.value;
+    const dept = document.getElementById("subj-filter-dept")?.value;
+    const scheme = document.getElementById("subj-filter-scheme")?.value;
+    const sem = document.getElementById("subj-filter-sem")?.value;
+    const search = document.getElementById("subj-filter-search")?.value;
+
+    if (ay) params.append("academic_year", ay);
+    if (dept) params.append("department", dept);
+    if (scheme) params.append("scheme", scheme);
+    if (sem) params.append("semester", sem);
+    if (search) params.append("search", search);
+
+    const qs = params.toString();
+    if (qs) url += `?${qs}`;
+
+    const res = await fetch(url, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Access Denied", err.detail || "Could not retrieve subject catalog.", "error");
+      if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--error-red); padding: 20px;">Failed to load subjects: ${err.detail || "Forbidden"}</td></tr>`;
+      return;
+    }
+
+    const data = await res.json();
+    state.allSubjects = data.subjects || [];
+    renderSubjectsTable(state.allSubjects);
+  } catch (err) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--error-red); padding: 20px;">Network communication error.</td></tr>`;
+  }
+}
+
+function renderSubjectsTable(subjects) {
+  const tbody = document.getElementById("subjects-table-body");
+  if (!tbody) return;
+
+  if (!subjects || subjects.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 30px; color:var(--text-muted);">No syllabus courses found matching filters.</td></tr>`;
+    return;
+  }
+
+  const isAdmin = state.currentUser && state.currentUser.role === "Admin";
+
+  tbody.innerHTML = subjects.map(s => {
+    let badgeClass = "badge-verified";
+    let badgeLabel = s.badge_label || s.verification_status || "Verified";
+    const bLow = (s.badge_class || "").toLowerCase();
+    if (bLow === "pending") badgeClass = "badge-pending";
+    else if (bLow === "unverified") badgeClass = "badge-unverified";
+    else if (bLow === "partially") badgeClass = "badge-role-admin";
+
+    return `
+      <tr>
+        <td style="font-family:var(--font-mono); font-weight:700; color:var(--royal-blue);">${escapeHtml(s.course_code)}</td>
+        <td>
+          <div style="font-weight:600; color:var(--primary-navy);">${escapeHtml(s.title)}</div>
+          ${s.source_notes ? `<div style="font-size:11px; color:var(--text-muted);">${escapeHtml(s.source_notes)}</div>` : ""}
+        </td>
+        <td><strong>${escapeHtml(s.department)}</strong></td>
+        <td>Sem ${escapeHtml(s.semester)}</td>
+        <td>${escapeHtml(s.scheme)}</td>
+        <td style="font-size:12px; color:var(--text-muted);">${escapeHtml(s.academic_year)}</td>
+        <td>${escapeHtml(s.course_type)} (${s.credits || 4} cr)</td>
+        <td><span class="badge ${badgeClass}" title="${escapeHtml(s.verification_status || '')}">${escapeHtml(badgeLabel)}</span></td>
+        <td style="text-align: right;">
+          ${isAdmin ? `
+            <button class="btn-xs btn-xs-primary" onclick="openEditSubjectModal(${s.id})">Edit</button>
+          ` : `
+            <span class="badge" style="background:#F1F5F9; color:var(--text-muted); border:1px solid #E2E8F0;">Scoped</span>
+          `}
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function filterSubjectsTable() {
+  const search = (document.getElementById("subj-filter-search")?.value || "").toLowerCase().trim();
+  const ay = document.getElementById("subj-filter-ay")?.value || "";
+  const dept = document.getElementById("subj-filter-dept")?.value || "";
+  const scheme = document.getElementById("subj-filter-scheme")?.value || "";
+  const sem = document.getElementById("subj-filter-sem")?.value || "";
+
+  let filtered = state.allSubjects || [];
+  if (ay) filtered = filtered.filter(s => s.academic_year === ay);
+  if (dept) filtered = filtered.filter(s => s.department === dept || s.department.includes(dept));
+  if (scheme) filtered = filtered.filter(s => s.scheme === scheme);
+  if (sem) filtered = filtered.filter(s => s.semester === sem || s.semester.includes(sem));
+  if (search) {
+    filtered = filtered.filter(s =>
+      (s.course_code && s.course_code.toLowerCase().includes(search)) ||
+      (s.title && s.title.toLowerCase().includes(search)) ||
+      (s.source_notes && s.source_notes.toLowerCase().includes(search))
+    );
+  }
+  renderSubjectsTable(filtered);
+}
+
+function onSubjectDeptChange(prefix) {
+  const deptEl = document.getElementById(`${prefix}-dept`);
+  const semEl = document.getElementById(`${prefix}-sem`);
+  if (!deptEl || !semEl) return;
+
+  const isMca = deptEl.value.toUpperCase().includes("MCA");
+  if (isMca) {
+    // MCA allowed semesters only (I, II, III, IV)
+    semEl.innerHTML = `
+      <option value="I">Semester I</option>
+      <option value="II">Semester II</option>
+      <option value="III">Semester III</option>
+      <option value="IV">Semester IV</option>
+    `;
+  } else {
+    // Engineering 8 semesters
+    semEl.innerHTML = `
+      <option value="I">Semester I</option>
+      <option value="II">Semester II</option>
+      <option value="III">Semester III</option>
+      <option value="IV">Semester IV</option>
+      <option value="V">Semester V</option>
+      <option value="VI">Semester VI</option>
+      <option value="VII">Semester VII</option>
+      <option value="VIII">Semester VIII</option>
+    `;
+  }
+}
+
+// ─── Add Subject Modal Handlers ───────────────────────────────────────────────
+function openAddSubjectModal() {
+  const form = document.getElementById("form-add-subject");
+  if (form) form.reset();
+  onSubjectDeptChange("as");
+  document.getElementById("modal-add-subject").style.display = "flex";
+}
+
+function closeAddSubjectModal() {
+  document.getElementById("modal-add-subject").style.display = "none";
+}
+
+async function handleAddSubject(e) {
+  e.preventDefault();
+  const code = document.getElementById("as-code").value.trim().toUpperCase();
+  const title = document.getElementById("as-title").value.trim();
+  const dept = document.getElementById("as-dept").value;
+  const sem = document.getElementById("as-sem").value;
+  const scheme = document.getElementById("as-scheme").value.trim();
+  const ay = document.getElementById("as-ay").value.trim();
+  const type = document.getElementById("as-type").value;
+  const credits = parseInt(document.getElementById("as-credits").value) || 4;
+  const vstatus = document.getElementById("as-vstatus").value.trim();
+  const notes = document.getElementById("as-notes").value.trim();
+
+  const btn = document.getElementById("btn-submit-add-subject");
+  btn.disabled = true;
+  btn.textContent = "Adding...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/subjects`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        course_code: code,
+        title,
+        department: dept,
+        scheme,
+        semester: sem,
+        academic_year: ay,
+        course_type: type,
+        credits,
+        verification_status: vstatus,
+        source_notes: notes || null
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Subject Added", `Academic course '${code}' successfully registered.`, "success");
+      closeAddSubjectModal();
+      await loadSubjectMasterList();
+      if (typeof loadDashboardStats === "function") loadDashboardStats();
+    } else {
+      showToast("Add Failed", data.detail || "Could not register subject.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to connect to syllabus server.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Add Subject";
+  }
+}
+
+// ─── Edit Subject Modal Handlers ──────────────────────────────────────────────
+async function openEditSubjectModal(subjectId) {
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/subjects/${subjectId}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Access Denied", err.detail || "Could not fetch subject details.", "error");
+      return;
+    }
+    const subj = await res.json();
+
+    document.getElementById("es-id").value = subj.id;
+    document.getElementById("es-code").value = subj.course_code;
+    document.getElementById("es-title").value = subj.title;
+    document.getElementById("es-dept").value = subj.department;
+
+    onSubjectDeptChange("es");
+
+    document.getElementById("es-sem").value = subj.semester.replace("Semester", "").trim();
+    document.getElementById("es-scheme").value = subj.scheme || "";
+    document.getElementById("es-ay").value = subj.academic_year || "";
+    document.getElementById("es-type").value = subj.course_type || "Theory";
+    document.getElementById("es-credits").value = subj.credits || 4;
+    document.getElementById("es-vstatus").value = subj.verification_status || "";
+    document.getElementById("es-notes").value = subj.source_notes || "";
+
+    document.getElementById("modal-edit-subject").style.display = "flex";
+  } catch (err) {
+    showToast("Network Error", "Could not open edit dialog.", "error");
+  }
+}
+
+function closeEditSubjectModal() {
+  document.getElementById("modal-edit-subject").style.display = "none";
+}
+
+async function handleEditSubject(e) {
+  e.preventDefault();
+  const subjId = document.getElementById("es-id").value;
+  const code = document.getElementById("es-code").value.trim().toUpperCase();
+  const title = document.getElementById("es-title").value.trim();
+  const dept = document.getElementById("es-dept").value;
+  const sem = document.getElementById("es-sem").value;
+  const scheme = document.getElementById("es-scheme").value.trim();
+  const ay = document.getElementById("es-ay").value.trim();
+  const type = document.getElementById("es-type").value;
+  const credits = parseInt(document.getElementById("es-credits").value) || 4;
+  const vstatus = document.getElementById("es-vstatus").value.trim();
+  const notes = document.getElementById("es-notes").value.trim();
+
+  const btn = document.getElementById("btn-submit-edit-subject");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/subjects/${subjId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        course_code: code,
+        title,
+        department: dept,
+        scheme,
+        semester: sem,
+        academic_year: ay,
+        course_type: type,
+        credits,
+        verification_status: vstatus,
+        source_notes: notes || null
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Subject Updated", `Changes to '${code}' have been saved.`, "success");
+      closeEditSubjectModal();
+      await loadSubjectMasterList();
+    } else {
+      showToast("Update Failed", data.detail || "Could not update subject.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to connect to syllabus server.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save Changes";
+  }
+}
+
+// ─── Utility Helper ──────────────────────────────────────────────────────────
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// ─── Module 6: Faculty Management & Institution Whitelist Governance ─────────
+let facultyRosterData = [];
+let institutionsData = [];
+let facultySearchDebounceTimer = null;
+
+async function loadFacultyTab() {
+  const isAdmin = state.currentUser && state.currentUser.role === "Admin";
+  if (isAdmin) {
+    await loadWhitelistInstitutions();
+  }
+  await loadFacultyRoster();
+}
+
+async function loadWhitelistInstitutions() {
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/institutions/whitelist`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    institutionsData = data.institutions || [];
+
+    // Render Whitelist Table
+    const tbody = document.getElementById("whitelist-table-body");
+    if (!tbody) return;
+
+    if (institutionsData.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--text-muted);">No external institutions registered.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = institutionsData.map(inst => `
+      <tr>
+        <td style="font-weight:600; color:var(--text-muted);">${inst.id}</td>
+        <td>
+          <strong style="color:var(--primary-navy);">${escapeHtml(inst.name)}</strong>
+        </td>
+        <td style="text-align:center; font-weight:700; color:var(--royal-blue);">${inst.faculty_count}</td>
+        <td style="text-align:center;">
+          <span class="badge ${inst.is_allowed ? 'badge-verified' : 'badge-unverified'}">
+            ${inst.is_allowed ? 'Whitelisted' : 'Disabled'}
+          </span>
+        </td>
+        <td style="text-align:right;">
+          <button class="btn btn-sm ${inst.is_allowed ? 'btn-secondary' : 'btn-success'}" onclick="handleToggleInstitutionWhitelist(${inst.id}, '${escapeHtml(inst.name).replace(/'/g, "\\'")}', ${inst.is_allowed})">
+            ${inst.is_allowed ? 'Disable' : 'Enable'}
+          </button>
+        </td>
+      </tr>
+    `).join("");
+
+    // Populate Institution filter dropdown if empty or needs update
+    const instSelect = document.getElementById("fac-filter-inst");
+    if (instSelect) {
+      const curVal = instSelect.value;
+      let html = `<option value="">All Institutions</option>`;
+      html += `<option value="SJB Institute of Technology">SJB Institute of Technology (Internal)</option>`;
+      institutionsData.forEach(inst => {
+        html += `<option value="${escapeHtml(inst.name)}">${escapeHtml(inst.name)}</option>`;
+      });
+      instSelect.innerHTML = html;
+      instSelect.value = curVal;
+    }
+  } catch (err) {
+    console.error("Failed to load institution whitelist:", err);
+  }
+}
+
+async function handleToggleInstitutionWhitelist(instId, instName, currentStatus) {
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/institutions/${instId}/toggle`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Institution Whitelist Updated", data.message, "success");
+      await loadWhitelistInstitutions();
+      await loadFacultyRoster();
+    } else {
+      showToast("Action Failed", data.detail || "Could not toggle institution status.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Could not connect to faculty server.", "error");
+  }
+}
+
+function filterFacultyTable() {
+  clearTimeout(facultySearchDebounceTimer);
+  facultySearchDebounceTimer = setTimeout(() => {
+    loadFacultyRoster();
+  }, 250);
+}
+
+async function loadFacultyRoster() {
+  const tbody = document.getElementById("faculty-table-body");
+  if (!tbody) return;
+
+  const search = document.getElementById("fac-filter-search")?.value.trim() || "";
+  const faculty_type = document.getElementById("fac-filter-type")?.value || "";
+  const department = document.getElementById("fac-filter-dept")?.value || "";
+  const institution = document.getElementById("fac-filter-inst")?.value || "";
+  const eligibility_status = document.getElementById("fac-filter-status")?.value || "";
+  const is_available = document.getElementById("fac-filter-avail")?.value || "";
+
+  const params = new URLSearchParams();
+  if (search) params.append("search", search);
+  if (faculty_type) params.append("faculty_type", faculty_type);
+  if (department) params.append("department", department);
+  if (institution) params.append("institution", institution);
+  if (eligibility_status) params.append("eligibility_status", eligibility_status);
+  if (is_available !== "") params.append("is_available", is_available);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/all?${params.toString()}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:24px; color:var(--error-red);">${escapeHtml(err.detail || "Access Denied")}</td></tr>`;
+      return;
+    }
+
+    const data = await res.json();
+    facultyRosterData = data.faculty || [];
+    renderFacultyTable(facultyRosterData);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:24px; color:var(--error-red);">Failed to connect to faculty database.</td></tr>`;
+  }
+}
+
+function renderFacultyTable(list) {
+  const tbody = document.getElementById("faculty-table-body");
+  const countLabel = document.getElementById("faculty-table-count");
+  if (!tbody) return;
+
+  if (countLabel) {
+    countLabel.textContent = `Showing ${list.length} faculty record${list.length === 1 ? '' : 's'}`;
+  }
+
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:30px; color:var(--text-muted);">No faculty records match the applied filters.</td></tr>`;
+    return;
+  }
+
+  const isAdmin = state.currentUser && state.currentUser.role === "Admin";
+
+  tbody.innerHTML = list.map(f => {
+    // Experience formatting: strict preservation of NULL
+    const expDisplay = (f.experience_years !== null && f.experience_years !== undefined)
+      ? `<strong>${f.experience_years}</strong> yrs`
+      : `<span style="color:var(--text-muted); font-style:italic;">Not provided</span>`;
+
+    // Email & mobile formatting: strict preservation of NULL
+    const emailDisplay = f.email
+      ? `<div style="font-size:12px; color:var(--text-dark);">${escapeHtml(f.email)}</div>`
+      : `<div style="font-size:11.5px; color:var(--text-muted); font-style:italic;">Email: Not provided</div>`;
+    const mobileDisplay = f.mobile
+      ? `<div style="font-size:11.5px; color:var(--text-muted);">📞 ${escapeHtml(f.mobile)}</div>`
+      : `<div style="font-size:11.5px; color:var(--text-muted); font-style:italic;">Phone: Not provided</div>`;
+
+    // Qualification & PhD badge
+    const qualText = f.qualification ? escapeHtml(f.qualification) : "";
+    const isPhd = qualText.toLowerCase().includes("ph.d") || qualText.toLowerCase().includes("phd");
+    const isPursuing = ["pursuing", "ongoing", "registered", "enrolled", "candidate"].some(p => qualText.toLowerCase().includes(p));
+
+    let qualBadge = "";
+    if (isPhd) {
+      if (isPursuing) {
+        qualBadge = `<span class="badge badge-amber" style="font-size:10px; margin-left:4px;">Ph.D Pursuing</span>`;
+      } else {
+        qualBadge = `<span class="badge badge-blue" style="font-size:10px; margin-left:4px;">Ph.D</span>`;
+      }
+    }
+
+    // Eligibility status badge
+    let statusBadge = "";
+    const status = f.eligibility_status || "";
+    if (status.includes("Qualified") && !status.startsWith("Not")) {
+      statusBadge = `<span class="badge badge-verified" title="${escapeHtml(status)}">✓ Qualified</span>`;
+    } else if (status.includes("Cannot Verify") || status.includes("Pending")) {
+      const reasonTitle = f.pending_reason ? escapeHtml(f.pending_reason) : "Experience details pending physical verification";
+      statusBadge = `
+        <span class="badge badge-pending" title="${reasonTitle}" style="display:inline-flex; align-items:center; gap:4px; cursor:help;">
+          ⚠️ Cannot Verify
+        </span>
+        <div style="font-size:10px; color:#B45309; margin-top:3px; max-width:170px; line-height:1.2;">
+          ${escapeHtml(f.pending_reason || "Experience duration not provided")}
+        </div>
+      `;
+    } else {
+      statusBadge = `
+        <span class="badge badge-unverified" title="${escapeHtml(f.pending_reason || status)}">✕ Not Qualified</span>
+        ${f.pending_reason ? `<div style="font-size:10px; color:#DC2626; margin-top:3px; max-width:170px; line-height:1.2;">${escapeHtml(f.pending_reason)}</div>` : ''}
+      `;
+    }
+
+    // Availability toggle
+    let availControl = "";
+    if (isAdmin) {
+      availControl = `
+        <button class="btn btn-sm ${f.is_available ? 'btn-success' : 'btn-secondary'}"
+          style="font-size:11.5px; padding:3px 8px;"
+          onclick="handleToggleFacultyAvailability(${f.id}, '${escapeHtml(f.name).replace(/'/g, "\\'")}', ${f.is_available})">
+          ${f.is_available ? '✓ Available' : '✕ Unavailable'}
+        </button>
+      `;
+    } else {
+      availControl = `
+        <span class="badge ${f.is_available ? 'badge-verified' : 'badge-unverified'}" style="font-size:11px;">
+          ${f.is_available ? 'Available' : 'Unavailable'}
+        </span>
+      `;
+    }
+
+    // Action button
+    const actionBtn = isAdmin
+      ? `<button class="btn btn-secondary btn-sm" onclick="openEditFacultyModal(${f.id})">✏️ Edit</button>`
+      : `<button class="btn btn-secondary btn-sm" onclick="openEditFacultyModal(${f.id}, true)">👁️ View</button>`;
+
+    return `
+      <tr>
+        <td style="font-weight:600; color:var(--text-muted);">${f.id}</td>
+        <td>
+          <div style="font-weight:700; color:var(--primary-navy); display:flex; align-items:center; flex-wrap:wrap;">
+            ${escapeHtml(f.name)}
+            ${qualBadge}
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
+            ${escapeHtml(f.designation || "Faculty")}
+          </div>
+        </td>
+        <td>
+          <span class="badge ${f.faculty_type === 'internal' ? 'badge-blue' : 'badge-purple'}">
+            ${f.faculty_type === 'internal' ? 'Internal' : 'External'}
+          </span>
+        </td>
+        <td><span style="font-weight:600;">${escapeHtml(f.department || "—")}</span></td>
+        <td style="font-size:12px; color:var(--text-dark); max-width:160px;">${escapeHtml(f.institution || "SJBIT")}</td>
+        <td style="font-size:12.5px;">${expDisplay}</td>
+        <td>${emailDisplay}${mobileDisplay}</td>
+        <td>${statusBadge}</td>
+        <td style="text-align:center;">${availControl}</td>
+        <td style="text-align:right;">${actionBtn}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function handleToggleFacultyAvailability(facultyId, facultyName, currentAvail) {
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/${facultyId}/toggle-availability`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Availability Updated", `Faculty '${facultyName}' is now marked as ${data.is_available ? 'Available' : 'Unavailable'}.`, "success");
+      await loadFacultyRoster();
+    } else {
+      showToast("Action Failed", data.detail || "Could not toggle availability.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Could not connect to faculty server.", "error");
+  }
+}
+
+async function openEditFacultyModal(facultyId, viewOnly = false) {
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/${facultyId}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Access Denied", err.detail || "Could not load faculty profile.", "error");
+      return;
+    }
+    const f = await res.json();
+
+    document.getElementById("ef-id").value = f.id;
+    document.getElementById("ef-name").value = f.name || "";
+    document.getElementById("ef-designation").value = f.designation || "";
+    document.getElementById("ef-dept").value = f.department || "MCA";
+    document.getElementById("ef-institution").value = f.institution || "SJB Institute of Technology";
+    document.getElementById("ef-qualification").value = f.qualification || "";
+    document.getElementById("ef-experience").value = (f.experience_years !== null && f.experience_years !== undefined) ? f.experience_years : "";
+    document.getElementById("ef-email").value = f.email || "";
+    document.getElementById("ef-mobile").value = f.mobile || "";
+    document.getElementById("ef-expertise").value = f.expertise_text || "";
+    document.getElementById("ef-availability").value = (f.is_available !== false).toString();
+
+    const isAdmin = state.currentUser && state.currentUser.role === "Admin" && !viewOnly;
+    const title = document.getElementById("modal-edit-faculty-title");
+    const saveBtn = document.getElementById("btn-submit-edit-faculty");
+
+    if (title) title.textContent = isAdmin ? "Edit Faculty Profile" : "Faculty Profile Details (View-Only)";
+    if (saveBtn) saveBtn.style.display = isAdmin ? "inline-block" : "none";
+
+    // Toggle readonly fields for non-admin
+    const form = document.getElementById("form-edit-faculty");
+    if (form) {
+      const inputs = form.querySelectorAll("input, select, textarea");
+      inputs.forEach(inp => {
+        if (inp.id !== "ef-id") {
+          inp.disabled = !isAdmin;
+        }
+      });
+    }
+
+    document.getElementById("modal-edit-faculty").style.display = "flex";
+  } catch (err) {
+    showToast("Network Error", "Could not open faculty profile.", "error");
+  }
+}
+
+function closeEditFacultyModal() {
+  document.getElementById("modal-edit-faculty").style.display = "none";
+}
+
+async function handleUpdateFaculty(e) {
+  e.preventDefault();
+  const fid = document.getElementById("ef-id").value;
+  const name = document.getElementById("ef-name").value.trim();
+  const designation = document.getElementById("ef-designation").value.trim();
+  const department = document.getElementById("ef-dept").value;
+  const institution = document.getElementById("ef-institution").value.trim();
+  const qualification = document.getElementById("ef-qualification").value.trim() || null;
+  const expRaw = document.getElementById("ef-experience").value.trim();
+  const experience_years = expRaw !== "" ? parseFloat(expRaw) : null;
+  const emailRaw = document.getElementById("ef-email").value.trim();
+  const email = emailRaw !== "" ? emailRaw : null;
+  const mobileRaw = document.getElementById("ef-mobile").value.trim();
+  const mobile = mobileRaw !== "" ? mobileRaw : null;
+  const expertise_text = document.getElementById("ef-expertise").value.trim() || null;
+  const is_available = document.getElementById("ef-availability").value === "true";
+
+  const btn = document.getElementById("btn-submit-edit-faculty");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/faculty/${fid}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        name,
+        designation,
+        department,
+        institution,
+        qualification,
+        experience_years,
+        email,
+        mobile,
+        expertise_text,
+        is_available
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Profile Updated", `Profile for '${name}' saved. Statutory eligibility: ${data.eligibility_status}`, "success");
+      closeEditFacultyModal();
+      await loadFacultyRoster();
+      if (state.currentUser && state.currentUser.role === "Admin") {
+        await loadDashboardStats();
+      }
+    } else {
+      showToast("Update Failed", data.detail || "Could not update faculty profile.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to connect to faculty server.", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Save Profile Changes";
+  }
+}
