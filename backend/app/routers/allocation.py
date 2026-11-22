@@ -612,7 +612,7 @@ def approve_allocation(
 
     # 1. Department Scoping Check
     dept_variants = resolve_department_names(db, current_user.department or "")
-    if dept_variants and alloc.department not in dept_variants:
+    if not dept_variants or alloc.department not in dept_variants:
         raise HTTPException(
             status_code=403,
             detail=f"Access Denied: HOD of '{current_user.department}' is not authorized to approve requests for '{alloc.department}' department."
@@ -710,7 +710,7 @@ def reject_allocation(
 
     # 1. Department Scoping Check
     dept_variants = resolve_department_names(db, current_user.department or "")
-    if dept_variants and alloc.department not in dept_variants:
+    if not dept_variants or alloc.department not in dept_variants:
         raise HTTPException(
             status_code=403,
             detail=f"Access Denied: HOD of '{current_user.department}' is not authorized to reject requests for '{alloc.department}' department."
@@ -791,7 +791,7 @@ def cancel_allocation(
 
     if current_user.role == "HOD":
         dept_variants = resolve_department_names(db, current_user.department or "")
-        if dept_variants and alloc.department not in dept_variants:
+        if not dept_variants or alloc.department not in dept_variants:
             raise HTTPException(status_code=403, detail="Access denied to cancel allocations outside your department.")
 
     if alloc.status in ("Cancelled", "Rejected"):

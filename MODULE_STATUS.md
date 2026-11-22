@@ -22,7 +22,26 @@
 | **Module 9 (Slice 1)** | Eligibility Policy & Workload Management | **DONE** | `tests/test_module9_eligibility.py` | Dynamic DB policy, capacities, append-only workload ledger triggers, candidate matrix. |
 | **Module 10 (Slice 2)** | Deterministic Matching Engine | **DONE** | `tests/test_module10_matching.py` | 9-level deterministic ranking, no arbitrary scores, explainable criteria reasons, RBAC. |
 | **Module 11 (Slice 3)** | Allocation Request & Recommendation UI | **DONE** | `tests/test_module11_allocation.py` | Mode splits (50:50, Internal/External only), MCA 4-sem rule, RESERVED ledger entries. |
-| **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **PLANNED** | Pending Slice 4 | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
+| **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **DONE** | `tests/test_module12_hod_approval.py` | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
+
+---
+
+## Slice 4 (Module 12) Architecture Highlights
+
+- **HOD Scoped Decision Authority**:
+  - `GET /api/allocation/pending-approvals`: HOD sees requests strictly for their own department; Admin sees all requests.
+  - Cross-department decisions strictly return HTTP 403.
+- **Atomic Workload Ledger Transitions**:
+  - Approval: In one atomic transaction, marks status `Approved`, writes `COMMITTED` (+1), and writes `RELEASED` (-1) to clear reservation while establishing active workload obligation.
+  - Rejection: In one atomic transaction, requires reason (min 3 chars), marks status `Rejected`, and writes `RELEASED` (-1) to release reservation.
+- **Double-Decision Protection**:
+  - Only requests in `Pending HOD Approval` can be approved or rejected. Attempting to decide an already decided request raises HTTP 409.
+- **Cancellation**:
+  - `POST /api/allocation/{id}/cancel` safely releases reserved or committed workload and logs audit records.
+- **UI Integration**:
+  - Modular `Pending Approvals` tab visible to HOD and Admin.
+  - Approve action and Reject modal with required reason.
+  - Toast notifications throughout (no `alert()`).
 
 ---
 
