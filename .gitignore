@@ -9,12 +9,12 @@ venv/
 ENV/
 env/
 
-# SQLite WAL and temporary files
+# SQLite databases, backups and temporary files
+examexpert.db
+*.db
 *.db-shm
 *.db-wal
 *.db-journal
-
-# Database backups (keep primary examexpert.db)
 *_backup*.db
 
 # Node / Frontend build (for future build steps)
