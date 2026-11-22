@@ -181,6 +181,7 @@
         <button class="nav-pill" id="nav-faculty" onclick="switchTab('faculty')">👨‍🏫 Faculty</button>
         <button class="nav-pill" id="nav-subjects" onclick="switchTab('subjects')">📚 Subject Master</button>
         <button class="nav-pill" id="nav-mappings" onclick="switchTab('mappings')">🧬 Expertise Mappings</button>
+        <button class="nav-pill" id="nav-pending-approvals" onclick="switchTab('pending-approvals')" style="display:none;">⏳ Pending Approvals</button>
         <button class="nav-pill" id="nav-users" onclick="switchTab('users')" style="display:none;">👥 Users</button>
         <button class="nav-pill" id="nav-datasets" onclick="switchTab('datasets')" style="display:none;">📁 Datasets & ETL</button>
         <button class="nav-pill" onclick="switchTab('history')">📜 Order Archive</button>
@@ -497,19 +498,47 @@
           <!-- Final Action Submission Bar -->
           <div style="margin-top:22px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
             <div style="font-size:12px; color:var(--text-muted); max-width:420px;">
-              Locking generates an official BOE Allocation Order, prepares Email & SMS notifications, and signs the audit trail.
+              Submitting places the allocation order into <strong>Pending HOD Approval</strong> status, reserves workload capacity in the immutable ledger, and routes the order to the department HOD for formal review.
             </div>
             <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
               <button type="button" class="btn btn-secondary" id="btn-send-faculty-otp" onclick="handleSendFacultyOTP()" style="background:#FFFFFF; border:1.5px solid var(--royal-blue); color:var(--royal-blue); font-weight:600; padding:9px 16px;">
                 📨 Send OTP to Selected Faculty
               </button>
               <button type="button" class="btn btn-amber" id="btn-final-submit" onclick="executeFinalAllocationSubmission()">
-                FINAL SUBMIT & GENERATE ALLOCATION &rarr;
+                SUBMIT ALLOCATION FOR HOD APPROVAL &rarr;
               </button>
             </div>
           </div>
         </div>
 
+      </div>
+
+
+      <!-- =====================================================================
+           MODULE 12: HOD PENDING APPROVALS TAB
+           ===================================================================== -->
+      <div id="tab-pending-approvals" class="tab-pane" style="display:none;">
+        <div class="page-title-banner">
+          <h2>HOD Allocation Approval Workflow</h2>
+          <p id="pending-approvals-subtitle">Review, verify, and approve question-paper setter allocations submitted by the COE Admin.</p>
+        </div>
+
+        <div class="selection-grid-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <div class="selection-grid-title" style="margin-bottom:0;">
+              <span>Pending Allocation Orders</span>
+            </div>
+            <button class="btn btn-secondary" onclick="loadPendingApprovals()">🔄 Refresh Requests</button>
+          </div>
+
+          <div id="pending-approvals-empty" style="display:none; text-align:center; padding:40px 20px; color:var(--text-muted);">
+            <div style="font-size:36px; margin-bottom:8px;">✅</div>
+            <h4 style="margin:0 0 4px 0; color:var(--text-dark);">No Pending Approvals</h4>
+            <p style="margin:0; font-size:13px;">There are currently no allocation orders awaiting review.</p>
+          </div>
+
+          <div id="pending-approvals-container" style="display:flex; flex-direction:column; gap:16px;"></div>
+        </div>
       </div>
 
 
@@ -1397,7 +1426,7 @@
     <div id="success-modal" class="modal-overlay">
       <div class="modal-dialog">
         <div class="modal-header">
-          <h3>✓ Question Paper Allocation Confirmed</h3>
+          <h3>✓ Allocation Submitted to HOD</h3>
           <button class="modal-close-btn" onclick="closeSuccessModal()">&times;</button>
         </div>
         <div class="modal-body" style="text-align:center; padding:28px 20px;">
@@ -1405,23 +1434,17 @@
             ✓
           </div>
           <h4 style="font-size:18px; color:var(--primary-navy); margin-bottom:8px;">
-            Allocation Order Registered Successfully!
+            Allocation Request Submitted for HOD Approval!
           </h4>
           <p style="color:var(--text-muted); font-size:13px; margin-bottom:18px;">
             Order Reference: <strong id="modal-ref-number" style="color:var(--royal-blue);">SJBIT-COE-ORDER</strong><br/>
-            Statutory 50:50 internal/external quota verified and cryptographically locked.
+            Status: <span class="badge" style="background:#FEF3C7; color:#92400E; font-weight:600; padding:2px 8px; border-radius:12px;">Pending HOD Approval</span>
           </p>
 
-          <div style="display:flex; justify-content:center; gap:12px; margin-bottom:20px;">
-            <button type="button" class="btn btn-amber" id="modal-btn-download-pdf" onclick="triggerModalPDFDownload()" style="font-size:13px; padding:10px 22px;">
-              📄 DOWNLOAD ALLOCATION ORDER (PDF)
-            </button>
-          </div>
-
           <div style="background:#F8FAFC; border:1px solid var(--border-light); border-radius:var(--radius-sm); padding:12px; text-align:left; font-size:12px; color:var(--text-muted); line-height:1.7;">
-            <div>✓ Official appointment orders prepared for all assigned setters.</div>
-            <div>✓ Dispatch notifications recorded in email/SMS logs.</div>
-            <div>✓ Allocation archived in Board of Examiners registry.</div>
+            <div>✓ Candidate workload capacity reserved in immutable Workload Ledger.</div>
+            <div>✓ Routed to departmental Head of Department for formal review.</div>
+            <div>✓ Audit trail entry signed and timestamped.</div>
           </div>
         </div>
         <div class="modal-footer">
@@ -1758,6 +1781,32 @@
             <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
               <button type="button" class="btn btn-secondary" onclick="closeCreateMappingModal()">Cancel</button>
               <button type="submit" class="btn btn-primary" id="btn-submit-mapping">Create Mapping</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rejection Reason Modal (HOD Only) -->
+    <div id="modal-reject-allocation" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 500px;">
+        <div class="modal-header">
+          <h3 style="color:#DC2626;">Reject Faculty Allocation Order</h3>
+          <button class="modal-close-btn" onclick="closeRejectAllocationModal()">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          <form id="form-reject-allocation" onsubmit="handleRejectAllocationSubmit(event)">
+            <input type="hidden" id="reject-alloc-id" />
+            <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
+              Please state the specific reason for rejecting this allocation recommendation. The reason will be recorded in the immutable audit trail and visible to the administrator.
+            </p>
+            <div class="form-group" style="margin-bottom: 14px;">
+              <label for="reject-reason" style="font-weight:600; font-size:13px; margin-bottom:6px; display:block;">Rejection Reason <span style="color:#DC2626;">*</span></label>
+              <textarea id="reject-reason" rows="4" class="form-control" placeholder="Enter reason for rejection (min 3 characters)..." required style="width:100%; padding:8px; border:1px solid var(--border-color); border-radius:4px; font-size:13px;"></textarea>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
+              <button type="button" class="btn btn-secondary" onclick="closeRejectAllocationModal()">Cancel</button>
+              <button type="submit" class="btn btn-danger" style="background:#DC2626; color:white; border:none; padding:8px 16px; border-radius:4px; font-weight:600; cursor:pointer;" id="btn-submit-rejection">Confirm Rejection</button>
             </div>
           </form>
         </div>

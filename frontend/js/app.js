@@ -279,6 +279,20 @@ function showAppView() {
     if (mapDeptFilter) mapDeptFilter.disabled = false;
   }
 
+  // Module 12: HOD & Admin Pending Approvals tab visibility
+  const isHodOrAdmin = state.currentUser && (state.currentUser.role === "HOD" || state.currentUser.role === "Admin");
+  const navPending = document.getElementById("nav-pending-approvals");
+  if (navPending) navPending.style.display = isHodOrAdmin ? "inline-flex" : "none";
+
+  const pendingSub = document.getElementById("pending-approvals-subtitle");
+  if (pendingSub && state.currentUser) {
+    if (state.currentUser.role === "HOD") {
+      pendingSub.textContent = `Department Scope: ${state.currentUser.department || "Your Department"}. Review and decide on nominated question-paper setters for your department.`;
+    } else if (state.currentUser.role === "Admin") {
+      pendingSub.textContent = "Administrative Overview: Review question-paper setter allocations across all departments awaiting HOD approval.";
+    }
+  }
+
   initializeDashboard();
 }
 
@@ -674,6 +688,7 @@ function switchTab(tabId) {
   if (tabId === "faculty") loadFacultyTab();
   if (tabId === "subjects") loadSubjectMasterList();
   if (tabId === "mappings") loadMappingsList();
+  if (tabId === "pending-approvals") loadPendingApprovals();
   if (tabId === "users") loadUsersList();
   if (tabId === "history") loadAllocationHistory();
   if (tabId === "notifications") loadNotifications();
@@ -1213,26 +1228,28 @@ async function executeFinalAllocationSubmission() {
     const result = await res.json();
 
     if (!res.ok) {
-      showToast("Confirmation Failed", result.detail || "Failed to confirm allocation.", "error");
+      showToast("Submission Failed", result.detail || "Failed to submit allocation.", "error");
       btn.disabled = false;
-      btn.textContent = "FINAL SUBMIT & GENERATE ALLOCATION →";
+      btn.textContent = "SUBMIT ALLOCATION FOR HOD APPROVAL →";
       return;
     }
 
     state.lastAllocationId = result.allocation_id;
     state.lastRefNumber = result.reference_number;
 
+    showToast("Submitted to HOD", result.message || "Allocation submitted for HOD approval and workload reserved.", "success");
+
     // Show Success Modal
     document.getElementById("modal-ref-number").textContent = result.reference_number;
     document.getElementById("success-modal").classList.add("active");
 
     btn.disabled = false;
-    btn.textContent = "FINAL SUBMIT & GENERATE ALLOCATION →";
+    btn.textContent = "SUBMIT ALLOCATION FOR HOD APPROVAL →";
 
   } catch (err) {
     showToast("Network Error", "Error executing allocation submission.", "error");
     btn.disabled = false;
-    btn.textContent = "FINAL SUBMIT & GENERATE ALLOCATION →";
+    btn.textContent = "SUBMIT ALLOCATION FOR HOD APPROVAL →";
   }
 }
 
@@ -1610,6 +1627,218 @@ async function loadImportHistory() {
     });
   } catch (e) {
     console.error("Failed to load import history:", e);
+  }
+}
+
+
+// ─── Module 12: HOD Approval Workflow & Pending Approvals ───────────────────
+async function loadPendingApprovals() {
+  const container = document.getElementById("pending-approvals-container");
+  const emptyState = document.getElementById("pending-approvals-empty");
+  if (!container) return;
+
+  container.innerHTML = `<div style="text-align:center; padding:30px; color:var(--text-muted);">Loading pending requests...</div>`;
+  if (emptyState) emptyState.style.display = "none";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/pending-approvals`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Access Notice", err.detail || "Unable to fetch pending approvals.", "warning");
+      container.innerHTML = "";
+      if (emptyState) emptyState.style.display = "block";
+      return;
+    }
+
+    const allocs = await res.json();
+    container.innerHTML = "";
+
+    if (!allocs || allocs.length === 0) {
+      if (emptyState) emptyState.style.display = "block";
+      return;
+    }
+
+    const isHod = state.currentUser && state.currentUser.role === "HOD";
+
+    allocs.forEach(a => {
+      const card = document.createElement("div");
+      card.className = "selection-grid-card";
+      card.style.borderLeft = "4px solid var(--royal-blue)";
+      card.style.marginBottom = "14px";
+      card.style.padding = "18px 20px";
+
+      let settersHtml = "";
+      (a.setters || []).forEach((s, idx) => {
+        const wl = s.workload || {};
+        settersHtml += `
+          <tr>
+            <td>${idx + 1}</td>
+            <td><strong>${escapeHtml(s.name || '—')}</strong></td>
+            <td><span class="badge ${s.faculty_type === 'internal' ? 'badge-blue' : 'badge-amber'}">${escapeHtml((s.faculty_type || '').toUpperCase())}</span></td>
+            <td>${escapeHtml(s.designation || '—')}</td>
+            <td>${escapeHtml(s.department || s.institution || '—')}</td>
+            <td>${escapeHtml(s.qualification || '—')}</td>
+            <td>${s.experience_years ? s.experience_years + ' yrs' : '—'}</td>
+            <td>
+              <span style="font-size:12px;">Committed: <strong>${wl.committed || 0}</strong> | Reserved: <strong>${wl.reserved || 0}</strong> (Total: <strong>${wl.total_active || 0}</strong>)</span>
+            </td>
+          </tr>
+        `;
+      });
+
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--primary-navy);">
+              ${escapeHtml(a.reference_number)}
+            </div>
+            <div style="font-size:13px; color:var(--text-muted); margin-top:2px;">
+              <strong>Subject:</strong> ${escapeHtml(a.subject ? a.subject.course_code + ' - ' + a.subject.title : '—')} •
+              <strong>Dept:</strong> ${escapeHtml(a.department || '—')} •
+              <strong>Sem:</strong> ${escapeHtml(a.semester || '—')} •
+              <strong>AY:</strong> ${escapeHtml(a.academic_year || '—')}
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="badge" style="background:#FEF3C7; color:#92400E; font-weight:600; padding:4px 10px; border-radius:12px;">
+              ${escapeHtml(a.status)}
+            </span>
+            <span class="badge badge-blue">
+              Mode: ${escapeHtml(a.allocation_mode || 'Balanced')}
+            </span>
+          </div>
+        </div>
+
+        <div style="margin-bottom:14px; font-size:13px;">
+          <div class="selection-grid-title" style="font-size:13px; margin-bottom:8px;">Nominated Question-Paper Setters</div>
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:40px;">#</th>
+                  <th>Faculty Name</th>
+                  <th>Pool</th>
+                  <th>Designation</th>
+                  <th>Dept / Institution</th>
+                  <th>Qualification</th>
+                  <th>Exp</th>
+                  <th>Active Workload</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${settersHtml}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-light); padding-top:12px; margin-top:12px; flex-wrap:wrap; gap:10px;">
+          <div style="font-size:12px; color:var(--text-muted);">
+            Submitted by <strong>${escapeHtml(a.submitted_by || 'Admin')}</strong> on ${a.created_at ? a.created_at.replace('T', ' ').substring(0, 19) : '—'}
+          </div>
+          <div style="display:flex; gap:10px;">
+            ${isHod ? `
+              <button class="btn btn-secondary" onclick="openRejectAllocationModal(${a.id})" style="background:#DC2626; color:white; border:none; padding:7px 16px; border-radius:4px; font-weight:600; cursor:pointer;">
+                ✗ Reject
+              </button>
+              <button class="btn btn-primary" onclick="handleApproveAllocation(${a.id})" style="background:#059669; color:white; border:none; padding:7px 18px; border-radius:4px; font-weight:600; cursor:pointer;">
+                ✓ Approve Allocation
+              </button>
+            ` : `
+              <span style="font-size:12px; color:var(--text-muted); font-style:italic;">Awaiting departmental HOD decision</span>
+            `}
+          </div>
+        </div>
+      `;
+
+      container.appendChild(card);
+    });
+
+  } catch (err) {
+    console.error("Failed to load pending approvals:", err);
+    showToast("Error", "Failed to retrieve pending approvals.", "error");
+  }
+}
+
+async function handleApproveAllocation(allocId) {
+  if (!confirm("Are you sure you want to approve this faculty allocation? Workload will be formally committed in the ledger.")) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/${allocId}/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      }
+    });
+    const result = await res.json();
+
+    if (!res.ok) {
+      showToast("Approval Failed", result.detail || "Failed to approve allocation.", "error");
+      return;
+    }
+
+    showToast("Allocation Approved", result.message || "Allocation approved and workload committed.", "success");
+    loadPendingApprovals();
+  } catch (err) {
+    showToast("Network Error", "Failed to execute approval.", "error");
+  }
+}
+
+function openRejectAllocationModal(allocId) {
+  document.getElementById("reject-alloc-id").value = allocId;
+  document.getElementById("reject-reason").value = "";
+  document.getElementById("modal-reject-allocation").classList.add("active");
+}
+
+function closeRejectAllocationModal() {
+  document.getElementById("modal-reject-allocation").classList.remove("active");
+}
+
+async function handleRejectAllocationSubmit(event) {
+  event.preventDefault();
+  const allocId = document.getElementById("reject-alloc-id").value;
+  const reason = document.getElementById("reject-reason").value;
+
+  if (!reason || reason.trim().length < 3) {
+    showToast("Validation Error", "Rejection reason must be at least 3 characters.", "warning");
+    return;
+  }
+
+  const btn = document.getElementById("btn-submit-rejection");
+  btn.disabled = true;
+  btn.textContent = "Rejecting...";
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/${allocId}/reject`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({ reason: reason.trim() })
+    });
+    const result = await res.json();
+
+    btn.disabled = false;
+    btn.textContent = "Confirm Rejection";
+
+    if (!res.ok) {
+      showToast("Rejection Failed", result.detail || "Failed to reject allocation.", "error");
+      return;
+    }
+
+    showToast("Allocation Rejected", result.message || "Allocation rejected and reservations released.", "info");
+    closeRejectAllocationModal();
+    loadPendingApprovals();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "Confirm Rejection";
+    showToast("Network Error", "Failed to submit rejection.", "error");
   }
 }
 

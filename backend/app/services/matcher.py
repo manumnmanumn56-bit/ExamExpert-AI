@@ -178,8 +178,11 @@ def match_and_rank_faculty(
             # Total experience
             total_exp = float(fac.experience_years or 0.0)
 
-            # Previous QP setting experience
-            prev_qp_exp = int(fac.assumed_times_handled or 0)
+            # Recorded previous paper-setting experience (from verified database allocations)
+            prev_qp_exp = db.query(AllocationSetter).join(Allocation).filter(
+                AllocationSetter.faculty_id == fac.id,
+                Allocation.status.in_(["Approved", "Confirmed"])
+            ).count()
 
             # Deterministic sorting tuple:
             # 1. Tier (1=EXACT, 2=SPECIALIZATION, 3=RELATED)
@@ -187,7 +190,7 @@ def match_and_rank_faculty(
             # 3. Repeated subject asc (0 before 1)
             # 4. Relevant course handling desc
             # 5. Total experience desc
-            # 6. Previous QP assignments desc
+            # 6. Recorded previous QP assignments desc (skipped/0 if none recorded)
             # 7. Faculty ID asc (final tie-breaker)
             sort_tuple = (
                 tier,
@@ -228,7 +231,7 @@ def match_and_rank_faculty(
                 "relevant_handled_count": relevant_handling,
                 "course_handled_count": relevant_handling,
                 "course_handled_display": f"{relevant_handling} times" if relevant_handling else "0 times",
-                "assumed_paper_setting_count": prev_qp_exp,
+                "recorded_paper_setting_count": prev_qp_exp,
                 "is_eligible": True,
                 "is_available": True,
                 "meets_min_handled": True,
@@ -241,7 +244,7 @@ def match_and_rank_faculty(
                     "subject_repetition": "First-time setter for this subject" if not repeated else "Previously appointed for this subject",
                     "relevant_handling": f"{relevant_handling} times handled course",
                     "total_experience": f"{total_exp:.1f}y teaching experience",
-                    "qp_setting_history": f"{prev_qp_exp} prior QP setting assignments",
+                    "qp_setting_history": f"{prev_qp_exp} recorded prior QP assignments" if prev_qp_exp > 0 else "No recorded prior QP assignments (skipped)",
                     "tie_breaker": f"Deterministic Faculty ID #{fac.id}"
                 },
                 "_sort_tuple": sort_tuple

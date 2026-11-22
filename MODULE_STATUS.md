@@ -21,8 +21,27 @@
 | **Module 8** | Faculty-Subject Expertise Mapping | **DONE** | `tests/test_module8_expertise_mapping.py` | Tiered generation (EXACT, SPECIALIZATION, RELATED), review UI. |
 | **Module 9 (Slice 1)** | Eligibility Policy & Workload Management | **DONE** | `tests/test_module9_eligibility.py` | Dynamic DB policy, capacities, append-only workload ledger triggers, candidate matrix. |
 | **Module 10 (Slice 2)** | Deterministic Matching Engine | **DONE** | `tests/test_module10_matching.py` | 9-level deterministic ranking, no arbitrary scores, explainable criteria reasons, RBAC. |
-| **Module 11 (Slice 3)** | Allocation Request & Recommendation UI | **PLANNED** | Pending Slice 3 | Mode splits (50:50, Internal/External only), MCA 4-sem rule, RESERVED ledger entries. |
+| **Module 11 (Slice 3)** | Allocation Request & Recommendation UI | **DONE** | `tests/test_module11_allocation.py` | Mode splits (50:50, Internal/External only), MCA 4-sem rule, RESERVED ledger entries. |
 | **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **PLANNED** | Pending Slice 4 | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
+
+---
+
+## Slice 3 (Module 11) Architecture Highlights
+
+- **MCA 4-Semester Curriculum Rule Validation**:
+  - Validated server-side in `validate_mca_semester`: Semesters I, II, III, IV pass; Semesters V–VIII strictly return HTTP 422.
+- **Allocation Modes & Shortage Handling**:
+  - Balanced 50:50 mode enforces equal parity between internal and external faculty pools.
+  - Transparent shortage reallocation fills deficits from other eligible candidates without lowering eligibility.
+  - Internal Only and External Only modes supported.
+- **Relational AllocationSetters**:
+  - Replaced plain JSON arrays with relational `AllocationSetter` entities tracking `assigned_order`, `faculty_type`, and `status`.
+- **Workload Reservation & Lifecycle**:
+  - `POST /api/allocation/create-request` creates requests in `Draft` or `Recommended` status.
+  - `POST /api/allocation/{id}/submit` atomically transitions status to `Pending HOD Approval` and writes `RESERVED` (`delta=1`) rows in the append-only `workload_ledger`.
+  - Faculty workload capacity limits strictly prevent over-allocation (HTTP 422).
+- **Direct HOD Bypass Removed**:
+  - Direct status transitions to "Confirmed" removed; all orders submit to `Pending HOD Approval`.
 
 ---
 

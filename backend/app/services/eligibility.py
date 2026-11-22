@@ -69,11 +69,16 @@ def get_faculty_workload(
         d = r.delta or 1
         etype = (r.entry_type or "").upper()
         if etype == "COMMITTED":
-            committed += d
+            committed += abs(d)
         elif etype == "RESERVED":
-            reserved += d
+            reserved += abs(d)
         elif etype == "RELEASED":
-            committed -= d
+            rem = (r.remarks or "").lower()
+            if "commit" in rem:
+                committed = max(0, committed - abs(d))
+            else:
+                # Releases reservation (e.g. upon approval, rejection, or cancellation)
+                reserved = max(0, reserved - abs(d))
 
     committed = max(0, committed)
     reserved = max(0, reserved)
