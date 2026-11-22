@@ -5,6 +5,9 @@ Tests RBAC, Department Scoping, Database Integrity, and Security.
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from tests.test_db_helper import create_isolated_test_db
+create_isolated_test_db("step1_")
+
 from backend.app.database import SessionLocal
 from backend.app.routers.auth import seed_rbac_users, require_roles, hash_password, verify_password
 from backend.app.routers.faculty import get_all_faculty

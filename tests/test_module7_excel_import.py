@@ -27,6 +27,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 
+from tests.test_db_helper import create_isolated_test_db
+create_isolated_test_db("mod7_")
+
 from backend.app.database import SessionLocal
 from backend.app.models import User, Faculty, Subject, ImportHistory, AuditLog
 from backend.app.services.importer import (

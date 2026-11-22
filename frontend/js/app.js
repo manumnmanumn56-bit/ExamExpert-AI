@@ -38,7 +38,11 @@ const state = {
 
   // Recent confirmed allocation
   lastAllocationId: null,
-  lastRefNumber: null
+  lastRefNumber: null,
+
+  // Module 8: Expertise Mappings
+  allMappings: [],
+  selectedMappingIds: new Set()
 };
 
 const API_BASE = "";
@@ -238,6 +242,41 @@ function showAppView() {
   if (adminBanner) {
     adminBanner.style.display = isAdmin ? "grid" : "none";
     if (isAdmin) loadDashboardStats();
+  }
+
+  // Module 8: Expertise Mappings role-based scoping & controls
+  const mapSubtitle = document.getElementById("mappings-scope-subtitle");
+  const mapDeptFilter = document.getElementById("map-filter-dept");
+  const btnGenSugg = document.getElementById("btn-generate-mapping-suggestions");
+  const btnBulkConf = document.getElementById("btn-bulk-confirm-mappings");
+  const btnAddMap = document.getElementById("btn-add-mapping");
+  const thBulk = document.getElementById("th-mapping-bulk");
+  const thActions = document.getElementById("th-mapping-actions");
+
+  if (btnGenSugg) btnGenSugg.style.display = isAdmin ? "inline-flex" : "none";
+  if (btnBulkConf) btnBulkConf.style.display = isAdmin ? "inline-flex" : "none";
+  if (btnAddMap) btnAddMap.style.display = isAdmin ? "inline-flex" : "none";
+  if (thBulk) thBulk.style.display = isAdmin ? "table-cell" : "none";
+  if (thActions) thActions.style.display = isAdmin ? "table-cell" : "none";
+
+  if (state.currentUser && !isAdmin && state.currentUser.department) {
+    if (mapSubtitle) {
+      mapSubtitle.textContent = `Department Scope: ${state.currentUser.department} (View-Only). Viewing mappings for your department's internal faculty & curriculum.`;
+    }
+    if (mapDeptFilter) {
+      mapDeptFilter.value = state.currentUser.department;
+      mapDeptFilter.disabled = true;
+    }
+  } else if (state.currentUser && state.currentUser.role === "Faculty") {
+    if (mapSubtitle) {
+      mapSubtitle.textContent = `My Expertise Mappings (View-Only). Showing subject mappings associated with your profile.`;
+    }
+    if (mapDeptFilter) mapDeptFilter.disabled = true;
+  } else {
+    if (mapSubtitle) {
+      mapSubtitle.textContent = `Review, confirm, or reject faculty-subject expertise mappings (EXACT_EXPERIENCE, SPECIALIZATION, RELATED) used for intelligent question-paper-setter recommendations.`;
+    }
+    if (mapDeptFilter) mapDeptFilter.disabled = false;
   }
 
   initializeDashboard();
@@ -634,6 +673,7 @@ function switchTab(tabId) {
   if (tabId === "dashboard" && state.currentUser && state.currentUser.role === "Admin") loadDashboardStats();
   if (tabId === "faculty") loadFacultyTab();
   if (tabId === "subjects") loadSubjectMasterList();
+  if (tabId === "mappings") loadMappingsList();
   if (tabId === "users") loadUsersList();
   if (tabId === "history") loadAllocationHistory();
   if (tabId === "notifications") loadNotifications();
@@ -2809,5 +2849,434 @@ async function handleUpdateFaculty(e) {
   } finally {
     btn.disabled = false;
     btn.textContent = "Save Profile Changes";
+  }
+}
+
+
+// =============================================================================
+// MODULE 8: FACULTY-SUBJECT EXPERTISE MAPPINGS CONTROLLER
+// =============================================================================
+
+async function loadMappingsList() {
+  const tbody = document.getElementById("mappings-table-body");
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding: 24px; color:var(--text-muted);">Loading expertise mappings...</td></tr>`;
+
+  try {
+    const params = new URLSearchParams();
+    const dept = document.getElementById("map-filter-dept")?.value;
+    const status = document.getElementById("map-filter-status")?.value;
+    const type = document.getElementById("map-filter-type")?.value;
+    const search = document.getElementById("map-filter-search")?.value;
+
+    if (dept) params.append("department", dept);
+    if (status) params.append("status", status);
+    if (type) params.append("mapping_type", type);
+    if (search && search.trim()) params.append("search", search.trim());
+
+    const res = await fetch(`${API_BASE}/api/mappings?${params.toString()}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast("Access Denied", err.detail || "Could not fetch expertise mappings.", "error");
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding: 24px; color:var(--crimson);">${err.detail || "Error loading mappings"}</td></tr>`;
+      return;
+    }
+
+    const data = await res.json();
+    state.allMappings = data.mappings || [];
+    state.selectedMappingIds.clear();
+    updateBulkConfirmButton();
+
+    // Update stats counters
+    const total = state.allMappings.length;
+    const suggested = state.allMappings.filter(m => m.status === "SUGGESTED").length;
+    const confirmed = state.allMappings.filter(m => m.status === "CONFIRMED").length;
+    const rejected = state.allMappings.filter(m => m.status === "REJECTED").length;
+
+    const elTotal = document.getElementById("stat-mappings-total");
+    const elSugg = document.getElementById("stat-mappings-suggested");
+    const elConf = document.getElementById("stat-mappings-confirmed");
+    const elRej = document.getElementById("stat-mappings-rejected");
+    if (elTotal) elTotal.textContent = total;
+    if (elSugg) elSugg.textContent = suggested;
+    if (elConf) elConf.textContent = confirmed;
+    if (elRej) elRej.textContent = rejected;
+
+    renderMappingsTable(state.allMappings);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding: 24px; color:var(--crimson);">Network error loading expertise mappings.</td></tr>`;
+    showToast("Network Error", "Failed to connect to mappings service.", "error");
+  }
+}
+
+function renderMappingsTable(mappings) {
+  const tbody = document.getElementById("mappings-table-body");
+  if (!tbody) return;
+
+  if (!mappings || mappings.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding: 36px; color:var(--text-muted);">No faculty-subject expertise mappings found matching criteria.</td></tr>`;
+    return;
+  }
+
+  const isAdmin = state.currentUser && state.currentUser.role === "Admin";
+
+  tbody.innerHTML = mappings.map(m => {
+    const isChecked = state.selectedMappingIds.has(m.id);
+
+    // Badges
+    let statusBadge = `<span class="badge" style="background:#FEF3C7; color:#92400E; border:1px solid #FDE68A;">SUGGESTED</span>`;
+    if (m.status === "CONFIRMED") {
+      statusBadge = `<span class="badge badge-success">CONFIRMED</span>`;
+    } else if (m.status === "REJECTED") {
+      statusBadge = `<span class="badge" style="background:#FEE2E2; color:#991B1B; border:1px solid #FECACA;">REJECTED</span>`;
+    }
+
+    let typeBadge = `<span class="badge" style="background:#EDE9FE; color:#5B21B6; border:1px solid #DDD6FE;">SPECIALIZATION</span>`;
+    if (m.mapping_type === "EXACT_EXPERIENCE") {
+      typeBadge = `<span class="badge" style="background:#DBEAFE; color:#1E40AF; border:1px solid #BFDBFE;">EXACT_EXPERIENCE</span>`;
+    } else if (m.mapping_type === "RELATED") {
+      typeBadge = `<span class="badge" style="background:#CCFBF1; color:#0F766E; border:1px solid #99F6E4;">RELATED</span>`;
+    }
+
+    const facTypeBadge = m.faculty_type === "internal"
+      ? `<span class="badge badge-role-faculty" style="font-size:10px; padding:2px 6px;">Internal</span>`
+      : `<span class="badge" style="font-size:10px; padding:2px 6px; background:#E0F2FE; color:#0369A1; border:1px solid #BAE6FD;">External</span>`;
+
+    const bulkCell = isAdmin
+      ? `<td style="text-align:center;"><input type="checkbox" ${isChecked ? "checked" : ""} onchange="toggleSelectMapping(${m.id}, this.checked)" /></td>`
+      : "";
+
+    let actionButtons = "";
+    if (isAdmin) {
+      if (m.status === "SUGGESTED") {
+        actionButtons = `
+          <button class="btn btn-secondary" onclick="handleConfirmMapping(${m.id})" style="padding:4px 8px; font-size:11px; margin-right:4px;" title="Confirm mapping">✅ Confirm</button>
+          <button class="btn btn-secondary" onclick="handleRejectMapping(${m.id})" style="padding:4px 8px; font-size:11px; margin-right:4px;" title="Reject mapping">❌ Reject</button>
+          <button class="btn btn-secondary" onclick="handleDeleteMapping(${m.id})" style="padding:4px 8px; font-size:11px; color:var(--crimson);" title="Delete mapping">🗑️</button>
+        `;
+      } else if (m.status === "CONFIRMED") {
+        actionButtons = `
+          <button class="btn btn-secondary" onclick="handleRejectMapping(${m.id})" style="padding:4px 8px; font-size:11px; margin-right:4px;" title="Reject mapping">❌ Reject</button>
+          <button class="btn btn-secondary" onclick="handleDeleteMapping(${m.id})" style="padding:4px 8px; font-size:11px; color:var(--crimson);" title="Delete mapping">🗑️</button>
+        `;
+      } else {
+        actionButtons = `
+          <button class="btn btn-secondary" onclick="handleConfirmMapping(${m.id})" style="padding:4px 8px; font-size:11px; margin-right:4px;" title="Confirm mapping">✅ Confirm</button>
+          <button class="btn btn-secondary" onclick="handleDeleteMapping(${m.id})" style="padding:4px 8px; font-size:11px; color:var(--crimson);" title="Delete mapping">🗑️</button>
+        `;
+      }
+    }
+
+    const actionCell = isAdmin ? `<td style="text-align:right; white-space:nowrap;">${actionButtons}</td>` : "";
+
+    return `
+      <tr>
+        ${bulkCell}
+        <td>
+          <strong style="color:var(--primary-navy);">${escapeHtml(m.faculty_name)}</strong> ${facTypeBadge}
+        </td>
+        <td>
+          <div style="font-size:12px; font-weight:600; color:var(--text-dark);">${escapeHtml(m.faculty_dept || m.institution || "SJBIT")}</div>
+          <div style="font-size:11px; color:var(--text-muted);">${escapeHtml(m.institution || "SJBIT")}</div>
+        </td>
+        <td>
+          <div style="font-weight:600; color:var(--primary-navy);">${escapeHtml(m.subject_title)}</div>
+          <div style="font-size:11px; color:var(--text-muted);"><code>${escapeHtml(m.course_code)}</code> • ${escapeHtml(m.subject_dept || "")} Sem ${escapeHtml(String(m.semester || ""))}</div>
+        </td>
+        <td>${typeBadge}</td>
+        <td style="text-align:center;">
+          <span style="font-weight:600; font-size:12px;">${m.times_handled || 0}</span>
+          <span style="font-size:11px; color:var(--text-muted);"> times</span>
+        </td>
+        <td>${statusBadge}</td>
+        <td style="font-size:11.5px; color:var(--text-dark); max-width:240px; line-height:1.4;">
+          ${escapeHtml(m.suggestion_reason || "Direct curriculum domain alignment.")}
+        </td>
+        <td style="font-size:11px; color:var(--text-muted);">
+          ${m.confirmed_by ? `<strong>${escapeHtml(m.confirmed_by)}</strong>` : "—"}
+        </td>
+        ${actionCell}
+      </tr>
+    `;
+  }).join("");
+}
+
+function filterMappingsList() {
+  loadMappingsList();
+}
+
+function resetMappingFilters() {
+  const searchInput = document.getElementById("map-filter-search");
+  const deptSelect = document.getElementById("map-filter-dept");
+  const statusSelect = document.getElementById("map-filter-status");
+  const typeSelect = document.getElementById("map-filter-type");
+
+  if (searchInput) searchInput.value = "";
+  if (deptSelect && (!state.currentUser || state.currentUser.role === "Admin")) deptSelect.value = "";
+  if (statusSelect) statusSelect.value = "";
+  if (typeSelect) typeSelect.value = "";
+
+  loadMappingsList();
+}
+
+function toggleSelectAllMappings(checked) {
+  state.selectedMappingIds.clear();
+  if (checked && state.allMappings) {
+    state.allMappings.forEach(m => state.selectedMappingIds.add(m.id));
+  }
+  updateBulkConfirmButton();
+  renderMappingsTable(state.allMappings);
+}
+
+function toggleSelectMapping(mappingId, checked) {
+  if (checked) {
+    state.selectedMappingIds.add(mappingId);
+  } else {
+    state.selectedMappingIds.delete(mappingId);
+  }
+  updateBulkConfirmButton();
+}
+
+function updateBulkConfirmButton() {
+  const countEl = document.getElementById("bulk-confirm-count");
+  if (countEl) countEl.textContent = state.selectedMappingIds.size;
+}
+
+async function handleGenerateMappingSuggestions() {
+  if (!confirm("Run automated suggestion generator? This analyzes verified course history and expertise keywords across all faculty and curriculum subjects to propose new mappings in SUGGESTED status.")) {
+    return;
+  }
+
+  const btn = document.getElementById("btn-generate-mapping-suggestions");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Analyzing...";
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/mappings/generate-suggestions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Suggestions Generated", data.message, "success");
+      await loadMappingsList();
+    } else {
+      showToast("Generation Failed", data.detail || "Could not generate suggestions.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to contact mappings server.", "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "⚡ Generate Suggestions";
+    }
+  }
+}
+
+async function handleConfirmMapping(mappingId) {
+  try {
+    const res = await fetch(`${API_BASE}/api/mappings/${mappingId}/confirm`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Mapping Confirmed", `Expertise mapping #${mappingId} confirmed and active for paper-setter matching.`, "success");
+      await loadMappingsList();
+    } else {
+      showToast("Confirmation Failed", data.detail || "Could not confirm mapping.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to update mapping status.", "error");
+  }
+}
+
+async function handleRejectMapping(mappingId) {
+  try {
+    const res = await fetch(`${API_BASE}/api/mappings/${mappingId}/reject`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Mapping Rejected", `Expertise mapping #${mappingId} rejected and excluded from paper-setter matching.`, "info");
+      await loadMappingsList();
+    } else {
+      showToast("Rejection Failed", data.detail || "Could not reject mapping.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to update mapping status.", "error");
+  }
+}
+
+async function handleBulkConfirmMappings() {
+  const count = state.selectedMappingIds.size;
+  if (count === 0) {
+    showToast("Selection Required", "Please select at least one expertise mapping using the checkboxes to bulk confirm.", "warning");
+    return;
+  }
+
+  if (!confirm(`Are you sure you want to bulk-confirm all ${count} selected expertise mapping(s)? They will immediately become eligible for question-paper-setter recommendations.`)) {
+    return;
+  }
+
+  const btn = document.getElementById("btn-bulk-confirm-mappings");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Confirming...";
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/mappings/bulk-confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({ mapping_ids: Array.from(state.selectedMappingIds) })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Bulk Confirmation Complete", data.message, "success");
+      state.selectedMappingIds.clear();
+      updateBulkConfirmButton();
+      await loadMappingsList();
+    } else {
+      showToast("Bulk Confirm Failed", data.detail || "Could not bulk-confirm mappings.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to execute bulk confirmation.", "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `✅ Bulk Confirm (<span id="bulk-confirm-count">${state.selectedMappingIds.size}</span>)`;
+    }
+  }
+}
+
+async function handleDeleteMapping(mappingId) {
+  if (!confirm(`Are you sure you want to delete expertise mapping #${mappingId}?`)) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/mappings/${mappingId}`, {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Mapping Deleted", data.message || `Mapping #${mappingId} deleted.`, "info");
+      await loadMappingsList();
+    } else {
+      showToast("Delete Failed", data.detail || "Could not delete mapping.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to delete mapping.", "error");
+  }
+}
+
+async function openCreateMappingModal() {
+  const modal = document.getElementById("modal-create-mapping");
+  if (!modal) return;
+
+  const facSelect = document.getElementById("cm-faculty-id");
+  const subjSelect = document.getElementById("cm-subject-id");
+
+  facSelect.innerHTML = `<option value="">Loading faculty...</option>`;
+  subjSelect.innerHTML = `<option value="">Loading subjects...</option>`;
+  modal.style.display = "flex";
+
+  try {
+    const [facRes, subjRes] = await Promise.all([
+      fetch(`${API_BASE}/api/faculty/all`, { headers: { "Authorization": `Bearer ${state.token}` } }),
+      fetch(`${API_BASE}/api/syllabus/all`, { headers: { "Authorization": `Bearer ${state.token}` } })
+    ]);
+
+    if (facRes.ok && subjRes.ok) {
+      const facData = await facRes.json();
+      const subjData = await subjRes.json();
+
+      facSelect.innerHTML = `<option value="">-- Choose Faculty Member --</option>` +
+        (facData.faculty || []).map(f => `<option value="${f.id}">${escapeHtml(f.name)} (${escapeHtml(f.department || f.institution || "")})</option>`).join("");
+
+      subjSelect.innerHTML = `<option value="">-- Choose Subject Course --</option>` +
+        (subjData.subjects || []).map(s => `<option value="${s.id}">[${escapeHtml(s.course_code)}] ${escapeHtml(s.title)} (${escapeHtml(s.department)} Sem ${escapeHtml(String(s.semester))})</option>`).join("");
+    }
+  } catch (err) {
+    showToast("Error", "Could not load faculty or subjects for mapping creation.", "error");
+  }
+}
+
+function closeCreateMappingModal() {
+  const modal = document.getElementById("modal-create-mapping");
+  if (modal) modal.style.display = "none";
+  const form = document.getElementById("form-create-mapping");
+  if (form) form.reset();
+}
+
+async function handleCreateMappingSubmit(event) {
+  event.preventDefault();
+  const facId = parseInt(document.getElementById("cm-faculty-id").value, 10);
+  const subjId = parseInt(document.getElementById("cm-subject-id").value, 10);
+  const mappingType = document.getElementById("cm-mapping-type").value;
+  const timesHandled = parseInt(document.getElementById("cm-times-handled").value || "0", 10);
+  const status = document.getElementById("cm-status").value;
+  const reason = document.getElementById("cm-reason").value.trim();
+
+  if (!facId || !subjId) {
+    showToast("Validation Error", "Please select both a faculty member and a subject course.", "warning");
+    return;
+  }
+
+  const btn = document.getElementById("btn-submit-mapping");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Creating...";
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/mappings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({
+        faculty_id: facId,
+        subject_id: subjId,
+        mapping_type: mappingType,
+        times_handled: timesHandled,
+        status: status,
+        suggestion_reason: reason || null
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Mapping Created", `Mapping created successfully for ${data.faculty_name} → ${data.subject_title} (${data.mapping_type}).`, "success");
+      closeCreateMappingModal();
+      await loadMappingsList();
+    } else {
+      // Toast notification for duplicate mapping error or validation
+      showToast("Creation Failed", data.detail || "Could not create expertise mapping.", "error");
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to connect to mappings service.", "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Create Mapping";
+    }
   }
 }

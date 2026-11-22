@@ -11,6 +11,9 @@ Tests:
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from tests.test_db_helper import create_isolated_test_db
+create_isolated_test_db("sec_step1_")
+
 from datetime import datetime, timedelta
 from fastapi import HTTPException
 from backend.app.database import SessionLocal

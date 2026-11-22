@@ -12,6 +12,9 @@ import sys
 # Ensure repository root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from tests.test_db_helper import create_isolated_test_db
+create_isolated_test_db("all_401_")
+
 from fastapi import HTTPException
 from backend.app.main import app
 from backend.app.routers.auth import get_current_user

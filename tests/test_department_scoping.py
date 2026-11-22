@@ -15,6 +15,9 @@ import sys
 # Ensure repository root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from tests.test_db_helper import create_isolated_test_db
+create_isolated_test_db("scoping_")
+
 from backend.app.database import SessionLocal
 from backend.app.models import User, Faculty
 from backend.app.routers.faculty import get_all_faculty

@@ -12,6 +12,9 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi.testclient import TestClient
+from tests.test_db_helper import create_isolated_test_db
+create_isolated_test_db("comp37_")
+
 from backend.app.main import app
 from backend.app.database import engine, Base, SessionLocal
 from backend.app.models import (
