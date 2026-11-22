@@ -27,9 +27,14 @@ router = APIRouter(prefix="/api/admin", tags=["Admin Governance"])
 
 # ─── Pydantic Request Models ──────────────────────────────────────────────────
 class RulesUpdateRequest(BaseModel):
-    min_experience_years: float = Field(default=10.0, ge=1.0, le=40.0)
-    phd_fasttrack_min_exp: float = Field(default=5.0, ge=0.0, le=20.0)
-    max_papers_per_faculty: int = Field(default=2, ge=1, le=10)
+    min_experience_years: float | None = None
+    min_experience: float | None = None
+    phd_fasttrack_min_exp: float | None = None
+    min_experience_phd: float | None = None
+    max_papers_per_faculty: int | None = None
+    internal_capacity: int | None = None
+    external_capacity: int | None = None
+    status: str | None = "CONFIRMED"
     require_parity: bool = True
     active_academic_year: str = "2025-26"
     upcoming_academic_year: str = "2026-27"
@@ -449,6 +454,11 @@ def get_rules(
     r = db.query(EligibilityRules).first()
     if not r:
         r = EligibilityRules(
+            min_experience=10.0,
+            min_experience_phd=5.0,
+            internal_capacity=2,
+            external_capacity=2,
+            status="CONFIRMED",
             min_experience_years=10.0,
             phd_fasttrack_min_exp=5.0,
             max_papers_per_faculty=2,
@@ -460,10 +470,20 @@ def get_rules(
         db.commit()
         db.refresh(r)
 
+    min_exp = float(r.min_experience if r.min_experience is not None else (r.min_experience_years or 10.0))
+    phd_min = float(r.min_experience_phd if r.min_experience_phd is not None else (r.phd_fasttrack_min_exp or 5.0))
+    int_cap = int(r.internal_capacity or r.max_internal_papers or r.max_papers_per_faculty or 2)
+    ext_cap = int(r.external_capacity or r.max_external_papers or 2)
+
     return {
-        "min_experience_years": r.min_experience_years,
-        "phd_fasttrack_min_exp": r.phd_fasttrack_min_exp,
-        "max_papers_per_faculty": r.max_papers_per_faculty,
+        "min_experience_years": min_exp,
+        "min_experience": min_exp,
+        "phd_fasttrack_min_exp": phd_min,
+        "min_experience_phd": phd_min,
+        "max_papers_per_faculty": int_cap,
+        "internal_capacity": int_cap,
+        "external_capacity": ext_cap,
+        "status": r.status or "CONFIRMED",
         "require_parity": r.require_parity,
         "active_academic_year": r.active_academic_year or "2025-26",
         "upcoming_academic_year": r.upcoming_academic_year or "2026-27",
@@ -477,25 +497,57 @@ def update_rules(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["Admin"]))
 ):
-    """Updates institutional allocation policies and logs change to audit trail."""
+    """Updates institutional allocation policies and logs change with old & new values."""
     r = db.query(EligibilityRules).first()
     if not r:
         r = EligibilityRules()
         db.add(r)
 
-    r.min_experience_years = req.min_experience_years
-    r.phd_fasttrack_min_exp = req.phd_fasttrack_min_exp
-    r.max_papers_per_faculty = req.max_papers_per_faculty
+    old_values = {
+        "min_experience": float(r.min_experience if r.min_experience is not None else (r.min_experience_years or 10.0)),
+        "min_experience_phd": float(r.min_experience_phd if r.min_experience_phd is not None else (r.phd_fasttrack_min_exp or 5.0)),
+        "internal_capacity": r.internal_capacity,
+        "external_capacity": r.external_capacity,
+        "status": r.status,
+        "active_academic_year": r.active_academic_year
+    }
+
+    min_e = req.min_experience if req.min_experience is not None else (req.min_experience_years or 10.0)
+    phd_e = req.min_experience_phd if req.min_experience_phd is not None else (req.phd_fasttrack_min_exp or 5.0)
+    int_c = req.internal_capacity if req.internal_capacity is not None else (req.max_papers_per_faculty or 2)
+    ext_c = req.external_capacity if req.external_capacity is not None else int_c
+
+    r.min_experience = min_e
+    r.min_experience_years = min_e
+    r.min_experience_phd = phd_e
+    r.phd_fasttrack_min_exp = phd_e
+    r.internal_capacity = int_c
+    r.external_capacity = ext_c
+    r.max_papers_per_faculty = int_c
+    r.max_internal_papers = int_c
+    r.max_external_papers = ext_c
+    if req.status:
+        r.status = req.status.upper()
     r.require_parity = req.require_parity
     r.active_academic_year = req.active_academic_year
     r.upcoming_academic_year = req.upcoming_academic_year
     r.updated_at = datetime.utcnow()
 
+    new_values = {
+        "min_experience": r.min_experience,
+        "min_experience_phd": r.min_experience_phd,
+        "internal_capacity": r.internal_capacity,
+        "external_capacity": r.external_capacity,
+        "status": r.status,
+        "active_academic_year": r.active_academic_year
+    }
+
+    import json
     db.add(AuditLog(
         action="ADMIN_POLICY_UPDATED",
         entity_type="EligibilityRules",
         entity_id=r.id,
-        details=f"Updated: Min Exp={req.min_experience_years}y, PhD Fast-track={req.phd_fasttrack_min_exp}y, Max Papers={req.max_papers_per_faculty}, Active AY={req.active_academic_year}."
+        details=json.dumps({"old": old_values, "new": new_values})
     ))
     db.commit()
 

@@ -27,7 +27,10 @@ class User(Base):
     reset_token = Column(String(100), nullable=True)
     reset_token_expires = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime, nullable=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    faculty = relationship("Faculty")
 
 
 class OTPToken(Base):
@@ -106,6 +109,14 @@ class Subject(Base):
 class EligibilityRules(Base):
     __tablename__ = "eligibility_rules"
     id = Column(Integer, primary_key=True)
+    min_experience = Column(Float, default=10.0)
+    min_experience_phd = Column(Float, default=5.0)
+    allowed_designations = Column(Text, default='["Assistant Professor", "Associate Professor", "Professor"]')
+    internal_capacity = Column(Integer, default=2)
+    external_capacity = Column(Integer, default=2)
+    status = Column(String(20), default="CONFIRMED")  # DRAFT | CONFIRMED
+
+    # Backward compatibility / legacy columns
     min_experience_years = Column(Float, default=10.0)
     phd_fasttrack_min_exp = Column(Float, default=5.0)
     max_papers_per_faculty = Column(Integer, default=2)
@@ -277,3 +288,18 @@ class ActiveSession(Base):
     is_revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User")
+
+
+# ─── Workload Ledger Immutability Guards ──────────────────────────────────────
+from sqlalchemy import event
+
+
+@event.listens_for(WorkloadLedger, "before_update")
+def _block_workload_ledger_update(mapper, connection, target):
+    raise ValueError("Workload ledger is append-only: UPDATE operations are strictly prohibited.")
+
+
+@event.listens_for(WorkloadLedger, "before_delete")
+def _block_workload_ledger_delete(mapper, connection, target):
+    raise ValueError("Workload ledger is append-only: DELETE operations are strictly prohibited.")
+

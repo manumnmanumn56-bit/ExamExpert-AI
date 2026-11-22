@@ -24,9 +24,9 @@ const state = {
   minHandled: 3,
   totalRequired: 4,
 
-  // Quota & Selection State
-  internalQuota: 2,
-  externalQuota: 2,
+  // Quota & Selection State (dynamically set from policy)
+  internalQuota: null,
+  externalQuota: null,
   selectedInternalIds: new Set(),
   selectedExternalIds: new Set(),
   allInternalCandidates: [],
@@ -679,7 +679,7 @@ function switchTab(tabId) {
   if (tabId === "notifications") loadNotifications();
   if (tabId === "audit") loadAuditLogs();
   if (tabId === "datasets") loadImportHistory();
-  if (tabId === "settings") loadPolicySettings();
+  if (tabId === "settings") { loadPolicySettings(); loadEligibilitySubjects(); }
 }
 
 
@@ -1706,30 +1706,70 @@ async function loadAuditLogs() {
 }
 
 
-// ─── Module 6: Institutional Policy Settings ──────────────────────────────────
+// ─── Module 9: Institutional Policy Settings & Eligibility Matrix ───────────
+let currentEvaluations = [];
+
 async function loadPolicySettings() {
+  const isAdmin = state.currentUser && state.currentUser.role === "Admin";
+  const btnSave = document.getElementById("btn-save-policy");
+  const readOnlyMsg = document.getElementById("policy-read-only-msg");
+  if (btnSave) btnSave.style.display = isAdmin ? "inline-block" : "none";
+  if (readOnlyMsg) readOnlyMsg.style.display = isAdmin ? "none" : "block";
+
+  // Disable fields for non-admin
+  ["cfg-min-exp", "cfg-phd-exp", "cfg-internal-cap", "cfg-external-cap", "cfg-allowed-desigs", "cfg-policy-status", "cfg-active-cycle"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !isAdmin;
+  });
+
   try {
-    const res = await fetch(`${API_BASE}/api/admin/rules`);
+    const res = await fetch(`${API_BASE}/api/eligibility/policy`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) return;
     const data = await res.json();
-    document.getElementById("cfg-min-exp").value = data.min_experience_years;
-    document.getElementById("cfg-phd-exp").value = data.phd_fasttrack_min_exp;
-    document.getElementById("cfg-max-papers").value = data.max_papers_per_faculty;
-    document.getElementById("cfg-active-cycle").value = data.active_academic_year;
-  } catch (e) {}
+    const p = data.active_policy || data.latest_policy;
+    if (p) {
+      if (document.getElementById("cfg-min-exp")) document.getElementById("cfg-min-exp").value = p.min_experience;
+      if (document.getElementById("cfg-phd-exp")) document.getElementById("cfg-phd-exp").value = p.min_experience_phd;
+      if (document.getElementById("cfg-internal-cap")) document.getElementById("cfg-internal-cap").value = p.internal_capacity;
+      if (document.getElementById("cfg-external-cap")) document.getElementById("cfg-external-cap").value = p.external_capacity;
+      if (document.getElementById("cfg-allowed-desigs")) document.getElementById("cfg-allowed-desigs").value = (p.allowed_designations || []).join(", ");
+      if (document.getElementById("cfg-policy-status")) document.getElementById("cfg-policy-status").value = p.status || "CONFIRMED";
+      if (document.getElementById("cfg-active-cycle")) document.getElementById("cfg-active-cycle").value = p.active_academic_year || "2025-26";
+
+      const badge = document.getElementById("policy-status-badge");
+      if (badge) {
+        badge.textContent = p.status || "CONFIRMED";
+        badge.className = p.status === "CONFIRMED" ? "badge badge-success" : "badge badge-amber";
+      }
+    }
+  } catch (e) {
+    console.error("Error loading policy settings:", e);
+  }
 }
 
 async function savePolicySettings() {
+  if (!state.currentUser || state.currentUser.role !== "Admin") {
+    showToast("Access Denied", "Only Administrator accounts may modify institutional eligibility policies.", "error");
+    return;
+  }
+
+  const allowedDesigsRaw = document.getElementById("cfg-allowed-desigs").value.trim();
+  const allowedDesigs = allowedDesigsRaw.split(",").map(s => s.trim()).filter(Boolean);
+
   const payload = {
-    min_experience_years: parseFloat(document.getElementById("cfg-min-exp").value),
-    phd_fasttrack_min_exp: parseFloat(document.getElementById("cfg-phd-exp").value),
-    max_papers_per_faculty: parseInt(document.getElementById("cfg-max-papers").value),
-    require_parity: true,
-    active_academic_year: document.getElementById("cfg-active-cycle").value.trim(),
-    upcoming_academic_year: "2026-27"
+    min_experience: parseFloat(document.getElementById("cfg-min-exp").value) || 10.0,
+    min_experience_phd: parseFloat(document.getElementById("cfg-phd-exp").value) || 5.0,
+    internal_capacity: parseInt(document.getElementById("cfg-internal-cap").value) || 2,
+    external_capacity: parseInt(document.getElementById("cfg-external-cap").value) || 2,
+    allowed_designations: allowedDesigs,
+    status: document.getElementById("cfg-policy-status").value || "CONFIRMED",
+    active_academic_year: document.getElementById("cfg-active-cycle").value.trim() || "2025-26"
   };
 
   try {
-    const res = await fetch(`${API_BASE}/api/admin/rules`, {
+    const res = await fetch(`${API_BASE}/api/eligibility/policy`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1737,15 +1777,138 @@ async function savePolicySettings() {
       },
       body: JSON.stringify(payload)
     });
+    const data = await res.json();
     if (res.ok) {
-      showToast("Policies Updated", "Institutional policies successfully saved and signed into audit trail.", "success");
+      showToast("Policy Saved", data.message || "Institutional eligibility policy updated and signed into audit log.", "success");
+      loadPolicySettings();
       loadAcademicYears();
+      if (document.getElementById("elig-subject-select").value) {
+        runEligibilityEvaluation();
+      }
     } else {
-      showToast("Update Failed", "Failed to update institutional policy settings.", "error");
+      showToast("Policy Update Failed", data.detail || "Server rejected policy modification.", "error");
     }
   } catch (e) {
-    showToast("Network Error", "Could not connect to server to update policies.", "error");
+    showToast("Network Error", "Unable to connect to server to update policy.", "error");
   }
+}
+
+async function loadEligibilitySubjects() {
+  const sel = document.getElementById("elig-subject-select");
+  if (!sel) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/syllabus/all`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) return;
+    const subjects = await res.json();
+    sel.innerHTML = `<option value="">-- Choose Subject to Audit (${subjects.length} courses) --</option>`;
+    subjects.forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = `${s.course_code} - ${s.title} (${s.department || "VTU"}, Sem ${s.semester})`;
+      sel.appendChild(opt);
+    });
+  } catch (e) {}
+}
+
+async function runEligibilityEvaluation() {
+  const subjectId = document.getElementById("elig-subject-select").value;
+  if (!subjectId) {
+    document.getElementById("elig-stats-row").style.display = "none";
+    document.getElementById("elig-results-card").style.display = "none";
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/eligibility/evaluate?subject_id=${subjectId}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast("Evaluation Error", data.detail || "Failed to evaluate candidates for this subject.", "error");
+      return;
+    }
+
+    currentEvaluations = data.evaluations || [];
+
+    // Render Stats
+    document.getElementById("elig-stats-row").style.display = "grid";
+    document.getElementById("elig-results-card").style.display = "block";
+    document.getElementById("elig-stat-total").textContent = data.counts.total || 0;
+    document.getElementById("elig-stat-eligible").textContent = data.counts.ELIGIBLE || 0;
+    document.getElementById("elig-stat-not-eligible").textContent = data.counts["NOT ELIGIBLE"] || 0;
+    document.getElementById("elig-stat-pending").textContent = data.counts["PENDING VERIFICATION"] || 0;
+    document.getElementById("elig-results-title").textContent = `Candidates Evaluated for ${data.subject.course_code}: ${data.subject.title}`;
+
+    renderEligibilityTable(currentEvaluations);
+  } catch (e) {
+    showToast("Evaluation Failed", "Network error communicating with eligibility engine.", "error");
+  }
+}
+
+function renderEligibilityTable(evals) {
+  const tbody = document.getElementById("elig-results-tbody");
+  tbody.innerHTML = "";
+  if (!evals || evals.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">No faculty records match current filter or role scope.</td></tr>`;
+    return;
+  }
+
+  evals.forEach(ev => {
+    const tr = document.createElement("tr");
+
+    let statusBadge = "";
+    if (ev.overall_status === "ELIGIBLE") {
+      statusBadge = `<span class="badge badge-success" style="font-weight:700;">✓ ELIGIBLE</span>`;
+    } else if (ev.overall_status === "NOT ELIGIBLE") {
+      statusBadge = `<span class="badge badge-danger" style="font-weight:700;">✕ NOT ELIGIBLE</span>`;
+    } else {
+      statusBadge = `<span class="badge badge-amber" style="font-weight:700;">⚠ PENDING VERIF</span>`;
+    }
+
+    const typeBadge = ev.faculty_type === "internal" 
+      ? `<span class="badge badge-internal">Internal</span>` 
+      : `<span class="badge badge-external">External</span>`;
+
+    const mappingRule = ev.rules?.expertise_mapping;
+    const mappingDisplay = mappingRule?.status === "PASS"
+      ? `<span style="color:#059669; font-weight:600;">✓ ${mappingRule.mapping_type || "CONFIRMED"}</span>`
+      : `<span style="color:#dc2626; font-size:11px;">✕ Unconfirmed</span>`;
+
+    const expDisplay = `${ev.experience_years != null ? ev.experience_years + "y" : "Missing"}` + 
+      (ev.has_completed_phd ? ` <span class="badge badge-role-admin" style="font-size:10px; padding:2px 5px;">Ph.D</span>` : "");
+
+    const loadDisplay = `${ev.current_workload} / ${ev.capacity}`;
+
+    tr.innerHTML = `
+      <td><strong>${ev.faculty_name}</strong><br><span style="font-size:11px; color:var(--text-muted);">ID: ${ev.faculty_id}</span></td>
+      <td>${typeBadge}<br><span style="font-size:11px;">${ev.department || "General"}</span></td>
+      <td style="font-size:12px;">${ev.designation || '<span style="color:#dc2626;">Missing</span>'}</td>
+      <td style="font-size:12px;">${expDisplay}</td>
+      <td>${mappingDisplay}</td>
+      <td style="font-weight:600; font-size:12px;">${loadDisplay}</td>
+      <td>${statusBadge}</td>
+      <td style="font-size:11.5px; max-width:280px; line-height:1.35; color:var(--text-muted);">${ev.summary_reason}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function filterEligibilityTable() {
+  const q = document.getElementById("elig-table-search").value.trim().toLowerCase();
+  if (!q) {
+    renderEligibilityTable(currentEvaluations);
+    return;
+  }
+  const filtered = currentEvaluations.filter(ev => {
+    return (ev.faculty_name || "").toLowerCase().includes(q) ||
+           (ev.department || "").toLowerCase().includes(q) ||
+           (ev.designation || "").toLowerCase().includes(q) ||
+           (ev.overall_status || "").toLowerCase().includes(q) ||
+           (ev.summary_reason || "").toLowerCase().includes(q);
+  });
+  renderEligibilityTable(filtered);
 }
 
 

@@ -982,10 +982,19 @@ def export_allocations_to_excel(db: Session) -> bytes:
 def seed_eligibility_rules(db: Session):
     r = db.query(EligibilityRules).first()
     if not r:
+        import json
         db.add(EligibilityRules(
+            min_experience=10.0,
+            min_experience_phd=5.0,
+            allowed_designations=json.dumps(["Assistant Professor", "Associate Professor", "Professor"]),
+            internal_capacity=2,
+            external_capacity=2,
+            status="CONFIRMED",
             min_experience_years=10.0,
             phd_fasttrack_min_exp=5.0,
             max_papers_per_faculty=2,
+            max_internal_papers=2,
+            max_external_papers=2,
             require_parity=True,
             active_academic_year="2025-26",
             upcoming_academic_year="2026-27"

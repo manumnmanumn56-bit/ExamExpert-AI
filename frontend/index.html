@@ -729,38 +729,140 @@
 
 
       <!-- =====================================================================
-           MODULE 6: INSTITUTIONAL POLICY SETTINGS
+           MODULE 9: INSTITUTIONAL ELIGIBILITY POLICY & CANDIDATE EVALUATION MATRIX
            ===================================================================== -->
       <div id="tab-settings" class="tab-pane" style="display:none;">
         <div class="page-title-banner">
-          <h2>Institutional Eligibility & Policy Rules</h2>
-          <p>Configure statutory experience thresholds, doctoral fast-tracks, and examination cycles.</p>
+          <h2>Institutional Eligibility Policy & Candidate Evaluation Matrix</h2>
+          <p>Configure statutory experience thresholds, doctoral fast-tracks, workload capacities, and audit real-time faculty eligibility.</p>
         </div>
 
-        <div class="selection-grid-card" style="max-width:700px;">
-          <div class="selection-grid-title">Policy Parameters</div>
-          
-          <div class="form-group" style="margin-bottom:14px;">
-            <label class="form-label">Minimum Total Teaching Experience (Years)</label>
-            <input type="number" id="cfg-min-exp" class="form-input" step="0.5" value="10.0" />
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:24px;">
+          <!-- Card 1: Policy Parameters & Capacities -->
+          <div class="selection-grid-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <div class="selection-grid-title" style="margin-bottom:0;">Statutory Policy Parameters</div>
+              <span id="policy-status-badge" class="badge badge-success" style="font-size:12px; padding:3px 10px;">CONFIRMED</span>
+            </div>
+            
+            <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; line-height:1.4;">
+              Strict Enforcement: Only <strong>CONFIRMED</strong> policies govern candidate eligibility. Workload capacities limit internal and external paper setter assignments.
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px;">Min Experience (Years)</label>
+                <input type="number" id="cfg-min-exp" class="form-input" step="0.5" value="10.0" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px;">Min Exp with Ph.D (Years)</label>
+                <input type="number" id="cfg-phd-exp" class="form-input" step="0.5" value="5.0" />
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px;">Internal Faculty Capacity</label>
+                <input type="number" id="cfg-internal-cap" class="form-input" value="2" min="1" max="10" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px;">External Faculty Capacity</label>
+                <input type="number" id="cfg-external-cap" class="form-input" value="2" min="1" max="10" />
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-bottom:12px;">
+              <label class="form-label" style="font-size:12px;">Allowed Designations (comma-separated)</label>
+              <input type="text" id="cfg-allowed-desigs" class="form-input" value="Assistant Professor, Associate Professor, Professor" />
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;">
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px;">Policy Status</label>
+                <select id="cfg-policy-status" class="form-select">
+                  <option value="CONFIRMED">CONFIRMED (Enforced)</option>
+                  <option value="DRAFT">DRAFT (Review Only)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:12px;">Active Academic Cycle</label>
+                <input type="text" id="cfg-active-cycle" class="form-input" value="2025-26" />
+              </div>
+            </div>
+
+            <div id="policy-edit-actions">
+              <button type="button" class="btn btn-primary" id="btn-save-policy" onclick="savePolicySettings()">Save Policy Updates</button>
+            </div>
+            <div id="policy-read-only-msg" style="display:none; font-size:12px; color:var(--text-muted); margin-top:8px;">
+              <em>Note: Policy configuration is restricted to the Controller of Examinations (Admin).</em>
+            </div>
           </div>
 
-          <div class="form-group" style="margin-bottom:14px;">
-            <label class="form-label">Doctoral Fast-Track Minimum Experience (Years)</label>
-            <input type="number" id="cfg-phd-exp" class="form-input" step="0.5" value="5.0" />
+          <!-- Card 2: Interactive Candidate Eligibility Verification Matrix -->
+          <div class="selection-grid-card">
+            <div class="selection-grid-title" style="margin-bottom:8px;">Subject Eligibility Verification</div>
+            <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; line-height:1.4;">
+              Audit real-time faculty candidate eligibility against active rules for a specific syllabus course.
+            </div>
+
+            <div class="form-group" style="margin-bottom:14px;">
+              <label class="form-label" style="font-size:12px;">Select Syllabus Subject for Audit</label>
+              <select id="elig-subject-select" class="form-select" onchange="runEligibilityEvaluation()">
+                <option value="">-- Choose Subject to Audit --</option>
+              </select>
+            </div>
+
+            <div id="elig-stats-row" style="display:none; grid-template-columns: repeat(4, 1fr); gap:8px; margin-bottom:14px;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-light); border-radius:6px; padding:8px; text-align:center;">
+                <div style="font-size:10px; color:var(--text-muted); font-weight:600;">CANDIDATES</div>
+                <div id="elig-stat-total" style="font-size:18px; font-weight:700; color:var(--text-main);">0</div>
+              </div>
+              <div style="background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:6px; padding:8px; text-align:center;">
+                <div style="font-size:10px; color:#059669; font-weight:600;">ELIGIBLE</div>
+                <div id="elig-stat-eligible" style="font-size:18px; font-weight:700; color:#059669;">0</div>
+              </div>
+              <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:8px; text-align:center;">
+                <div style="font-size:10px; color:#dc2626; font-weight:600;">NOT ELIGIBLE</div>
+                <div id="elig-stat-not-eligible" style="font-size:18px; font-weight:700; color:#dc2626;">0</div>
+              </div>
+              <div style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px; text-align:center;">
+                <div style="font-size:10px; color:#d97706; font-weight:600;">PENDING VERIF</div>
+                <div id="elig-stat-pending" style="font-size:18px; font-weight:700; color:#d97706;">0</div>
+              </div>
+            </div>
+
+            <button type="button" class="btn btn-secondary btn-sm" onclick="runEligibilityEvaluation()">
+              🔄 Re-run Eligibility Verification
+            </button>
+          </div>
+        </div>
+
+        <!-- Evaluation Results Table -->
+        <div class="selection-grid-card" id="elig-results-card" style="display:none;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div class="selection-grid-title" id="elig-results-title">Evaluated Faculty Candidates</div>
+            <input type="text" id="elig-table-search" placeholder="Filter faculty name, status or department..." class="form-input" style="max-width:300px; font-size:12px; padding:6px 10px;" oninput="filterEligibilityTable()" />
           </div>
 
-          <div class="form-group" style="margin-bottom:14px;">
-            <label class="form-label">Maximum Question Paper Sets Per Faculty</label>
-            <input type="number" id="cfg-max-papers" class="form-input" value="2" />
+          <div style="overflow-x:auto;">
+            <table class="data-table" id="elig-results-table">
+              <thead>
+                <tr>
+                  <th>Faculty Candidate</th>
+                  <th>Type / Dept</th>
+                  <th>Designation</th>
+                  <th>Experience & Ph.D</th>
+                  <th>Expertise Mapping</th>
+                  <th>Workload (Ledger)</th>
+                  <th>Eligibility Status</th>
+                  <th>Rule Audit Details</th>
+                </tr>
+              </thead>
+              <tbody id="elig-results-tbody">
+                <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">Select a subject above to evaluate candidate eligibility.</td></tr>
+              </tbody>
+            </table>
           </div>
-
-          <div class="form-group" style="margin-bottom:14px;">
-            <label class="form-label">Active Academic Cycle Indicator</label>
-            <input type="text" id="cfg-active-cycle" class="form-input" value="2025-26" />
-          </div>
-
-          <button type="button" class="btn btn-primary" onclick="savePolicySettings()">Save Policy Updates</button>
         </div>
       </div>
 

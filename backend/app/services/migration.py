@@ -62,16 +62,54 @@ def run_database_migrations(db: Session):
             conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN max_external_papers INTEGER DEFAULT 2"))
         if "external_allowed_institutions" not in rules_cols:
             conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN external_allowed_institutions TEXT"))
+        if "min_experience" not in rules_cols:
+            conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN min_experience FLOAT DEFAULT 10.0"))
+        if "min_experience_phd" not in rules_cols:
+            conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN min_experience_phd FLOAT DEFAULT 5.0"))
+        if "allowed_designations" not in rules_cols:
+            conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN allowed_designations TEXT DEFAULT '[\"Assistant Professor\", \"Associate Professor\", \"Professor\"]'"))
+        if "internal_capacity" not in rules_cols:
+            conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN internal_capacity INTEGER DEFAULT 2"))
+        if "external_capacity" not in rules_cols:
+            conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN external_capacity INTEGER DEFAULT 2"))
+        if "status" not in rules_cols:
+            conn.execute(text("ALTER TABLE eligibility_rules ADD COLUMN status VARCHAR(20) DEFAULT 'CONFIRMED'"))
+
+        conn.execute(text("""
+            UPDATE eligibility_rules
+            SET min_experience = coalesce(min_experience, min_experience_years, 10.0),
+                min_experience_phd = coalesce(min_experience_phd, phd_fasttrack_min_exp, 5.0),
+                internal_capacity = coalesce(internal_capacity, max_internal_papers, max_papers_per_faculty, 2),
+                external_capacity = coalesce(external_capacity, max_external_papers, 2),
+                allowed_designations = coalesce(allowed_designations, '["Assistant Professor", "Associate Professor", "Professor"]'),
+                status = coalesce(status, 'CONFIRMED')
+        """))
 
         # Allocations table checks
         alloc_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(allocations)")).fetchall()]
         if "allocation_mode" not in alloc_cols:
             conn.execute(text("ALTER TABLE allocations ADD COLUMN allocation_mode VARCHAR(30) DEFAULT 'Balanced'"))
 
-        # Workload ledger checks
+        # Workload ledger checks & triggers
         workload_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(workload_ledger)")).fetchall()]
         if "semester" not in workload_cols:
             conn.execute(text("ALTER TABLE workload_ledger ADD COLUMN semester VARCHAR(20)"))
+
+        # SQLite triggers: enforce append-only immutability (block UPDATE and DELETE)
+        conn.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS trg_workload_ledger_no_update
+            BEFORE UPDATE ON workload_ledger
+            BEGIN
+                SELECT RAISE(ABORT, 'Workload ledger is append-only: UPDATE operations are strictly prohibited.');
+            END;
+        """))
+        conn.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS trg_workload_ledger_no_delete
+            BEFORE DELETE ON workload_ledger
+            BEGIN
+                SELECT RAISE(ABORT, 'Workload ledger is append-only: DELETE operations are strictly prohibited.');
+            END;
+        """))
 
         # Faculty subject mappings checks
         fsm_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(faculty_subject_mappings)")).fetchall()]

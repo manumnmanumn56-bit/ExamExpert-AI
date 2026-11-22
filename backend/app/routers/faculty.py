@@ -29,6 +29,7 @@ from ..services.importer import (
     PREVIEW_CACHE
 )
 from ..services.migration import resolve_department_names
+from ..services.eligibility import get_faculty_workload
 from .auth import require_roles, get_current_user
 
 router = APIRouter(prefix="/api/faculty", tags=["Faculty"])
@@ -369,10 +370,13 @@ def get_my_faculty_profile(
     Retrieves the authenticated faculty member's OWN profile, qualifications,
     eligibility status, and current QP setting workload.
     Strictly server-resolved from the current session (never from a browser-supplied ID).
+    Reads workload directly from the append-only WorkloadLedger.
     """
-    # 1. Match Faculty record by email or full name / username
+    # 1. Match Faculty record: check faculty_id first, then email, full name, username
     f = None
-    if current_user.email:
+    if current_user.faculty_id:
+        f = db.query(Faculty).filter(Faculty.id == current_user.faculty_id).first()
+    if not f and current_user.email:
         f = db.query(Faculty).filter(Faculty.email.ilike(current_user.email.strip())).first()
     if not f and current_user.full_name:
         f = db.query(Faculty).filter(Faculty.name.ilike(f"%{current_user.full_name.strip()}%")).first()
@@ -386,9 +390,12 @@ def get_my_faculty_profile(
             detail="No linked faculty profile found for current user session. Contact the Controller of Examinations."
         )
 
-    # 2. Compute assigned workload in active academic cycle
-    alloc_counts = _get_allocation_counts(db)
-    assigned_count = alloc_counts.get(f.id, 0)
+    # 2. Compute assigned workload strictly from WorkloadLedger
+    rules = _get_rules(db)
+    active_ay = rules.active_academic_year or "2025-26"
+    ledger_workload = get_faculty_workload(db, f.id, active_ay)
+    assigned_count = ledger_workload["total_active"]
+    max_workload = int(rules.internal_capacity if f.faculty_type == "internal" else rules.external_capacity)
 
     # Query detailed allocations where faculty is assigned
     confirmed_allocs = db.query(Allocation).filter_by(status="Confirmed").all()
@@ -409,9 +416,6 @@ def get_my_faculty_profile(
                 "confirmed_at": a.confirmed_at.isoformat() if a.confirmed_at else None
             })
 
-    rules = _get_rules(db)
-    max_workload = rules.max_papers_per_faculty or 2
-
     return {
         "id": f.id,
         "employee_id": f.employee_id,
@@ -431,6 +435,8 @@ def get_my_faculty_profile(
         "is_available": f.is_available if f.is_available is not None else True,
         "workload": {
             "assigned_papers": assigned_count,
+            "committed_papers": ledger_workload["committed"],
+            "reserved_papers": ledger_workload["reserved"],
             "max_allowed_papers": max_workload,
             "remaining_quota": max(0, max_workload - assigned_count),
             "allocations": assigned_allocations

@@ -220,20 +220,21 @@ def check_conflicts(
             "description": f"This subject already has a confirmed allocation (Order Ref: {existing.reference_number})."
         })
 
-    # 3. Workload limits check (max papers)
+    # 3. Workload limits check (capacity per internal/external from policy)
     rules = _get_rules(db)
     alloc_counts = _get_existing_counts(db)
-    max_papers = rules.max_papers_per_faculty or 2
 
     for fid in all_ids:
         cur_count = alloc_counts.get(fid, 0)
-        if cur_count >= max_papers:
-            f = db.query(Faculty).filter_by(id=fid).first()
-            fname = f.name if f else f"Faculty #{fid}"
+        f = db.query(Faculty).filter_by(id=fid).first()
+        fname = f.name if f else f"Faculty #{fid}"
+        ftype = f.faculty_type if f else "internal"
+        cap = int(rules.internal_capacity if ftype == "internal" else rules.external_capacity) if getattr(rules, "internal_capacity", None) else int(rules.max_papers_per_faculty or 2)
+        if cur_count >= cap:
             conflicts.append({
                 "type": "MAX_PAPERS_EXCEEDED",
                 "severity": "Critical",
-                "description": f"{fname} already has {cur_count} confirmed question paper allocations (maximum limit: {max_papers})."
+                "description": f"{fname} already has {cur_count} confirmed question paper allocations (maximum limit: {cap})."
             })
 
     # 4. Total count match
@@ -380,18 +381,19 @@ def confirm_allocation(
     if not all_ids:
         raise HTTPException(status_code=400, detail="At least one faculty member must be selected.")
 
-    # Over-allocation conflict verification
+    # Over-allocation conflict verification against policy capacities
     rules = _get_rules(db)
     alloc_counts = _get_existing_counts(db)
-    max_papers = rules.max_papers_per_faculty or 2
 
     for fid in all_ids:
-        if alloc_counts.get(fid, 0) >= max_papers:
-            f = db.query(Faculty).filter_by(id=fid).first()
-            fname = f.name if f else f"ID {fid}"
+        f = db.query(Faculty).filter_by(id=fid).first()
+        fname = f.name if f else f"ID {fid}"
+        ftype = f.faculty_type if f else "internal"
+        cap = int(rules.internal_capacity if ftype == "internal" else rules.external_capacity) if getattr(rules, "internal_capacity", None) else int(rules.max_papers_per_faculty or 2)
+        if alloc_counts.get(fid, 0) >= cap:
             raise HTTPException(
                 status_code=422,
-                detail=f"Cannot allocate {fname}: faculty workload limit of {max_papers} papers reached."
+                detail=f"Cannot allocate {fname}: faculty workload limit of {cap} papers reached."
             )
 
     ref_number = _generate_ref_number()

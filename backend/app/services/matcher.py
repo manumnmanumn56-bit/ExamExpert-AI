@@ -130,9 +130,13 @@ def check_eligibility(faculty: Faculty, rules: EligibilityRules) -> dict:
             "reason": "Teaching experience not publicly disclosed in university roster. Physical service-certificate verification required before appointment."
         }
 
-    # Statutory Threshold Check
-    min_exp = rules.min_experience_years if rules else 10.0
-    phd_min = rules.phd_fasttrack_min_exp if rules else 5.0
+    # Statutory Threshold Check from database policy (no hardcoded limits)
+    if not rules:
+        min_exp = 10.0
+        phd_min = 5.0
+    else:
+        min_exp = float(rules.min_experience if getattr(rules, "min_experience", None) is not None else rules.min_experience_years)
+        phd_min = float(rules.min_experience_phd if getattr(rules, "min_experience_phd", None) is not None else rules.phd_fasttrack_min_exp)
 
     if exp >= min_exp:
         return {
@@ -271,9 +275,9 @@ def compute_suitability(
         meets_handled = True if elig["is_eligible"] else False
         course_handled_display = "Course History Verification Required"
 
-    # Over-allocation check
-    max_papers = rules.max_papers_per_faculty if rules else 2
-    over_allocated = (existing_allocation_count >= max_papers)
+    # Over-allocation check using capacity from database policy
+    capacity = int(rules.internal_capacity if faculty.faculty_type == "internal" else rules.external_capacity) if (rules and getattr(rules, "internal_capacity", None)) else int(rules.max_papers_per_faculty if rules else 2)
+    over_allocated = (existing_allocation_count >= capacity)
 
     return {
         "faculty_id": faculty.id,
