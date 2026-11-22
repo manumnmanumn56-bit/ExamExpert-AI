@@ -975,7 +975,7 @@ function renderInternalFacultyTable() {
       <td>${f.experience_years ? f.experience_years.toFixed(1) + ' Yrs' : 'N/A'}</td>
       <td>${handledBadge}</td>
       <td>${eligBadge}</td>
-      <td><strong style="color:var(--royal-blue); font-size:13px;">${f.total_score}</strong> / 100</td>
+      <td><span class="badge badge-blue">Rank #${f.rank || 1}</span><div style="font-size:10.5px; color:var(--text-muted);">${f.criteria_reasons?.tier || f.mapping_type || 'Eligible'}</div></td>
     `;
     tbody.appendChild(tr);
   });
@@ -1013,7 +1013,7 @@ function renderExternalFacultyTable() {
       <td>${f.experience_years ? f.experience_years.toFixed(1) + ' Yrs' : 'Undisclosed'}</td>
       <td>${handledCell}</td>
       <td>${eligBadge}</td>
-      <td><strong style="color:var(--royal-blue); font-size:13px;">${f.total_score}</strong> / 100</td>
+      <td><span class="badge badge-blue">Rank #${f.rank || 1}</span><div style="font-size:10.5px; color:var(--text-muted);">${f.criteria_reasons?.tier || f.mapping_type || 'Eligible'}</div></td>
     `;
     tbody.appendChild(tr);
   });

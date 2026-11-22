@@ -218,11 +218,13 @@ def evaluate_candidates(
     elif current_user.role == "HOD":
         dept_variants = resolve_department_names(db, current_user.department or "")
         if dept_variants:
-            # HOD sees internal faculty in their department + external faculty if relevant
+            # HOD sees strictly their own department's internal faculty in general eligibility audit
             query = query.filter(
-                (Faculty.department.in_(dept_variants)) |
-                (Faculty.faculty_type == "external")
+                Faculty.department.in_(dept_variants),
+                Faculty.faculty_type == "internal"
             )
+        else:
+            query = query.filter(Faculty.faculty_type == "internal")
 
     faculty_list = query.all()
 

@@ -385,11 +385,12 @@ def run_module9_tests():
         total_admin = eval_admin["counts"]["total"]
         assert total_admin > 0
 
-        # 2. HOD sees department candidates only
+        # 2. HOD sees department internal candidates only (external excluded from general eligibility audit)
         eval_hod = evaluate_candidates(subject_id=test_subj.id, db=db, current_user=hod_mca)
+        assert eval_hod["counts"]["total"] > 0
         for cand in eval_hod["evaluations"]:
-            if cand["faculty_type"] == "internal":
-                assert cand["department"] in ["MCA", "Master of Computer Applications"]
+            assert cand["faculty_type"] == "internal", f"HOD must see only internal faculty, got {cand['faculty_type']}"
+            assert cand["department"] in ["MCA", "Master of Computer Applications"]
 
         # 3. Faculty sees own record only
         eval_fac = evaluate_candidates(subject_id=test_subj.id, db=db, current_user=faculty_user)

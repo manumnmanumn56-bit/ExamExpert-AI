@@ -18,7 +18,8 @@ from ..models import (
     Faculty, Subject, Allocation, AllocationConflict,
     EligibilityRules, NotificationLog, AuditLog, User
 )
-from ..services.matcher import rank_candidates
+from ..services.matcher import rank_candidates, match_and_rank_faculty
+from ..services.migration import resolve_department_names
 from ..services.pdf_generator import generate_allocation_pdf
 from .auth import require_roles, get_current_user
 
@@ -66,6 +67,8 @@ class AutoSelectRequest(BaseModel):
     subject_id: int
     min_handled: int = Field(default=1, ge=1, le=7)
     total_required: int = Field(default=2, ge=1, le=10)
+    mode: str = Field(default="Balanced")  # "Balanced" | "Internal Only" | "External Only"
+    academic_year: str | None = None
 
 
 class ConflictCheckRequest(BaseModel):
@@ -95,69 +98,91 @@ class ConfirmAllocationRequest(BaseModel):
     submission_deadline: str | None = None
 
 
-# ─── Auto-Select & 50:50 Parity Recommendation ───────────────────────────────
+# ─── Auto-Select & Deterministic Matching Recommendation ─────────────────────
 
 @router.post("/auto-select")
 def auto_select(
     req: AutoSelectRequest,
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["Admin", "HOD"]))
+    current_user: User = Depends(require_roles(["Admin", "HOD"]))
 ):
     """
-    Calculates 50:50 quota and recommends top eligible faculty.
-    Rounding rule: For odd numbers, internal receives the additional position.
-    If external qualified candidates are insufficient, reports shortage and requires exception.
+    Deterministically ranks eligible faculty using Module 10 matching engine.
+    Order:
+    1. Exact subject experience (EXACT_EXPERIENCE confirmed mapping)
+    2. Specialization (SPECIALIZATION confirmed mapping)
+    3. Related expertise (RELATED confirmed mapping)
+    4. Lower combined workload (committed + reserved from ledger)
+    5. Avoid repeating same subject
+    6. Higher relevant-subject experience
+    7. Higher total experience
+    8. Previous paper-setting experience
+    9. Faculty ID as final tie-breaker
+    Role-scoped: Admin all; HOD own department only; Faculty 403.
     """
     subject = db.query(Subject).filter_by(id=req.subject_id).first()
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found in syllabus database.")
 
+    # Explicit server-side role check (enforces RBAC on both API and direct python calls)
+    if current_user.role not in ["Admin", "HOD"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access Denied: Action requires one of ['Admin', 'HOD'] role permissions. Current role is '{current_user.role}'."
+        )
+
+    # Server-side department scoping: HOD can only run auto-select for own department subjects
+    if current_user.role == "HOD":
+        dept_variants = resolve_department_names(db, current_user.department or "")
+        if dept_variants and subject.department not in dept_variants:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access Denied: HOD of '{current_user.department}' is not authorized to allocate faculty for '{subject.department}' subjects."
+            )
+
     rules = _get_rules(db)
-    alloc_counts = _get_existing_counts(db)
     total_req = req.total_required
+    mode = req.mode or "Balanced"
+    ay = req.academic_year or (rules.active_academic_year if rules else "2025-26")
 
-    # 50:50 Quota Calculation
-    # Even: 2->1/1, 4->2/2, 6->3/3, 8->4/4, 10->5/5
-    # Odd: 1->1/0, 3->2/1, 5->3/2, 7->4/3, 9->5/4
-    internal_quota = (total_req + 1) // 2
-    external_quota = total_req - internal_quota
+    # Mode Quota Calculation
+    if mode == "Internal Only":
+        internal_quota = total_req
+        external_quota = 0
+    elif mode == "External Only":
+        internal_quota = 0
+        external_quota = total_req
+    else:  # Balanced 50:50 parity (odd numbers round internal up)
+        internal_quota = (total_req + 1) // 2
+        external_quota = total_req - internal_quota
 
-    int_ranked = rank_candidates(db, subject.title, subject.course_code or "",
-                                 req.min_handled, "internal", rules, alloc_counts)
-    ext_ranked = rank_candidates(db, subject.title, subject.course_code or "",
-                                 req.min_handled, "external", rules, alloc_counts)
+    # Run deterministic Module 10 matching engine
+    int_match = match_and_rank_faculty(db, subject, "internal", ay, rules)
+    ext_match = match_and_rank_faculty(db, subject, "external", ay, rules)
 
-    # Pick top available internal candidates who meet min_handled threshold
-    sel_int = [
-        f for f in int_ranked
-        if f["is_eligible"] and f["meets_min_handled"] and f["is_available"]
-    ][:internal_quota]
+    int_recommended = int_match["recommended"]
+    ext_recommended = ext_match["recommended"]
 
-    # Pick verified Qualified external candidates
-    sel_ext = [
-        f for f in ext_ranked
-        if f["eligibility_status"] == "Qualified" and f["is_available"]
-    ][:external_quota]
+    # Select top N eligible candidates
+    sel_int = int_recommended[:internal_quota]
+    sel_ext = ext_recommended[:external_quota]
 
     warnings = []
     requires_exception = False
-    unfilled_internal = internal_quota - len(sel_int)
-    unfilled_external = external_quota - len(sel_ext)
+    unfilled_internal = max(0, internal_quota - len(sel_int))
+    unfilled_external = max(0, external_quota - len(sel_ext))
 
     if unfilled_internal > 0:
         warnings.append(
             f"Internal Faculty Shortage: Only {len(sel_int)} of {internal_quota} required internal "
-            f"faculty meet the minimum course handling count of {req.min_handled}."
+            f"positions could be filled with eligible faculty."
         )
 
     if unfilled_external > 0:
         requires_exception = True
         warnings.append(
             f"External Faculty Shortage: Only {len(sel_ext)} of {external_quota} required external "
-            f"positions could be filled with verified qualified candidates. "
-            f"Note: 70 external university faculty profiles have 'Cannot Verify' status due to "
-            f"undisclosed teaching experience. Authorized administrative approval is required to "
-            f"appoint candidates with unverified experience."
+            f"positions could be filled with eligible faculty."
         )
 
     return {
@@ -170,6 +195,7 @@ def auto_select(
             "academic_year": subject.academic_year,
             "scheme": subject.scheme
         },
+        "mode": mode,
         "total_required": total_req,
         "internal_quota": internal_quota,
         "external_quota": external_quota,
@@ -181,8 +207,15 @@ def auto_select(
         "unfilled_external": unfilled_external,
         "requires_exception": requires_exception,
         "warnings": warnings,
-        "all_internal_candidates": int_ranked,
-        "all_external_candidates": ext_ranked
+        "recommended_internal": int_recommended,
+        "recommended_external": ext_recommended,
+        "not_eligible_internal": int_match["not_eligible"],
+        "not_eligible_external": ext_match["not_eligible"],
+        "pending_internal": int_match["pending_verification"],
+        "pending_external": ext_match["pending_verification"],
+        # Backward-compatible candidate lists
+        "all_internal_candidates": int_recommended,
+        "all_external_candidates": ext_recommended
     }
 
 

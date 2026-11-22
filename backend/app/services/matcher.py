@@ -1,321 +1,302 @@
 """
-ExamExpert AI — Intelligent Faculty Eligibility & Explainable Matching Engine
+ExamExpert AI — Deterministic Faculty-Subject Matching & Ranking Engine
 SJB Institute of Technology | Office of Controller of Examinations
 
-Deterministic, rule-based matching between curriculum subjects and faculty members.
-Evaluates statutory eligibility, subject expertise, verified course-handling history,
-designation seniority, and teaching experience.
+Implements Module 10 (Slice 2):
+1. Strict Deterministic Multi-Level Ranking (No arbitrary 0-100 scores)
+   Hierarchy:
+   1. Exact subject experience (EXACT_EXPERIENCE confirmed mapping)
+   2. Specialization (SPECIALIZATION confirmed mapping)
+   3. Related expertise (RELATED confirmed mapping)
+   4. Lower combined workload (committed + reserved from workload_ledger)
+   5. Avoid repeating the same subject (fresh appointment ranks ahead of repeat setter)
+   6. Higher relevant-subject experience (times handled)
+   7. Higher total teaching experience (experience_years)
+   8. Previous paper-setting experience if recorded (assumed_times_handled)
+   9. Faculty ID as final deterministic tie-breaker (ascending)
+2. Only ELIGIBLE faculty (from Module 9 policy engine) are ranked.
+3. PENDING VERIFICATION and NOT ELIGIBLE faculty are segregated with reasons, never recommended.
+4. Excludes faculty from disabled external institutions.
+5. Separate internal and external candidate pools with shortage reporting.
 """
-import re
+from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
+
 from ..models import (
-    Faculty, FacultyCourseHistory, FacultyExpertise, EligibilityRules,
-    FacultySubjectMapping, Subject
+    Faculty, Subject, EligibilityRules, Allocation, AllocationSetter,
+    FacultySubjectMapping, ExternalInstitution, WorkloadLedger
+)
+from .eligibility import (
+    get_confirmed_policy,
+    evaluate_faculty_eligibility,
+    get_faculty_workload,
+    is_phd_completed
 )
 
-def _normalize(text: str) -> str:
-    """Lowercase, strip non-alphanumeric characters, collapse whitespace."""
-    if not text:
-        return ""
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
 
-
-def _word_overlap(a: str, b: str) -> float:
-    """Calculates Jaccard overlap fraction between word sets."""
-    words_a = set(_normalize(a).split())
-    words_b = set(_normalize(b).split())
-    # Remove insignificant stopwords
-    stopwords = {"and", "in", "for", "with", "the", "of", "to", "an", "a", "lab", "laboratory"}
-    words_a -= stopwords
-    words_b -= stopwords
-    if not words_a or not words_b:
-        return 0.0
-    return len(words_a & words_b) / len(words_a)
-
-
-def match_course_title(subject_title: str, candidate_title: str) -> float:
+def get_mapping_tier(mapping_type: Optional[str]) -> int:
     """
-    Returns similarity score (0.0 to 1.0) between a syllabus subject and a candidate course title.
-    Employs exact phrase matching, normalized substring, and word overlap.
+    Returns numeric priority tier for confirmed mappings:
+    1: EXACT_EXPERIENCE
+    2: SPECIALIZATION
+    3: RELATED
+    4: Unspecified / None
     """
-    norm_subj = _normalize(subject_title)
-    norm_cand = _normalize(candidate_title)
-
-    if not norm_subj or not norm_cand:
-        return 0.0
-
-    # 1. Exact match
-    if norm_subj == norm_cand:
-        return 1.0
-
-    # 2. Substring match
-    if norm_subj in norm_cand or norm_cand in norm_subj:
-        return 0.95
-
-    # 3. Word overlap
-    overlap = _word_overlap(norm_subj, norm_cand)
-    if overlap >= 0.6:
-        return overlap
-
-    return 0.0
-
-
-# ─── Course Handling History Lookup ────────────────────────────────────────────
-
-def get_verified_course_handling(
-    faculty: Faculty,
-    subject_title: str,
-    confirmed_mapping: FacultySubjectMapping | None = None
-) -> tuple[int | None, str]:
-    """
-    Extracts the subject-specific verified times handled for this exact subject.
-    For internal faculty: queries parsed FacultyCourseHistory records or confirmed database mapping.
-    For external faculty: returns (None, 'unverified') per Section 2.2 and Section 10 guidelines,
-    as external dataset only contains assumed overall question paper setting counts.
-    """
-    if faculty.faculty_type == "external":
-        # External dataset does not contain verified subject-specific course teaching history
-        return None, "unverified"
-
-    # Confirmed mapping can supply verified teaching history if EXACT_EXPERIENCE
-    if confirmed_mapping and confirmed_mapping.status == "CONFIRMED" and confirmed_mapping.mapping_type == "EXACT_EXPERIENCE":
-        if confirmed_mapping.times_handled and confirmed_mapping.times_handled > 0:
-            return confirmed_mapping.times_handled, "exact"
-
-    best_count = None
-    best_score = 0.0
-
-    for ch in faculty.course_history:
-        score = match_course_title(subject_title, ch.course_title or "")
-        if score >= 0.70 and score > best_score:
-            best_score = score
-            best_count = ch.times_handled
-
-    if best_count is not None:
-        source = "exact" if best_score >= 0.90 else "overlap"
-        return best_count, source
-
-    return None, "none"
-
-
-# ─── Statutory Eligibility Check ───────────────────────────────────────────────
-
-def check_eligibility(faculty: Faculty, rules: EligibilityRules) -> dict:
-    """
-    Determines statutory eligibility based on institutional VTU/Autonomous rules:
-    - Minimum 10 years of total teaching experience, OR
-    - Ph.D holder with minimum 5 years teaching experience.
-    Preserves original dataset status provenance.
-    """
-    raw_status = (faculty.eligibility_status or "").strip()
-    qual = (faculty.qualification or "").lower()
-    has_phd = ("ph.d" in qual) or ("phd" in qual)
-    exp = faculty.experience_years
-
-    # Explicitly Not Qualified in source dataset
-    if "not qualified" in raw_status.lower() or "below threshold" in raw_status.lower():
-        return {
-            "is_eligible": False,
-            "status": "Not Qualified",
-            "reason": f"Marked 'Not Qualified' in official roster (Experience: {exp} yrs < threshold)."
-        }
-
-    # External faculty with undisclosed experience
-    if exp is None or "cannot verify" in raw_status.lower() or "not disclosed" in raw_status.lower():
-        return {
-            "is_eligible": False,
-            "status": "Cannot Verify",
-            "reason": "Teaching experience not publicly disclosed in university roster. Physical service-certificate verification required before appointment."
-        }
-
-    # Statutory Threshold Check from database policy (no hardcoded limits)
-    if not rules:
-        min_exp = 10.0
-        phd_min = 5.0
-    else:
-        min_exp = float(rules.min_experience if getattr(rules, "min_experience", None) is not None else rules.min_experience_years)
-        phd_min = float(rules.min_experience_phd if getattr(rules, "min_experience_phd", None) is not None else rules.phd_fasttrack_min_exp)
-
-    if exp >= min_exp:
-        return {
-            "is_eligible": True,
-            "status": "Qualified",
-            "reason": f"Meets statutory threshold: {exp:.1f} yrs teaching experience (>= {min_exp:.0f} yrs required)."
-        }
-
-    if has_phd and exp >= phd_min:
-        return {
-            "is_eligible": True,
-            "status": "Qualified",
-            "reason": f"Doctoral fast-track approved: Ph.D + {exp:.1f} yrs teaching experience (>= {phd_min:.0f} yrs required)."
-        }
-
-    return {
-        "is_eligible": False,
-        "status": "Not Qualified",
-        "reason": f"Experience of {exp:.1f} yrs is below statutory threshold of {min_exp:.0f} yrs."
-    }
-
-
-# ─── Transparent Suitability Scoring (0 to 100) ──────────────────────────────
-
-def _score_designation(desig: str | None) -> int:
-    d = (desig or "").upper()
-    if any(k in d for k in ["HOD", "HEAD", "DIRECTOR", "DEAN"]):
-        return 15
-    if "PROFESSOR" in d and "ASSOCIATE" not in d and "ASST" not in d and "ASSISTANT" not in d:
-        return 13
-    if "ASSOCIATE PROFESSOR" in d or "ASSOC. PROFESSOR" in d or "ASSOCIATE" in d:
-        return 11
-    if "ASST" in d or "ASSISTANT" in d:
-        return 8
-    return 5
-
-
-def _score_experience(exp: float | None) -> int:
-    if exp is None:
-        return 0
-    if exp >= 25:
-        return 10
-    if exp >= 20:
-        return 8
-    if exp >= 15:
-        return 6
-    if exp >= 10:
+    if not mapping_type:
         return 4
-    return 2
+    mt = mapping_type.upper()
+    if mt == "EXACT_EXPERIENCE":
+        return 1
+    elif mt == "SPECIALIZATION":
+        return 2
+    elif mt == "RELATED":
+        return 3
+    return 4
 
 
-def _score_handling_count(count: int | None, faculty_type: str) -> int:
+def has_set_subject_before(db: Session, faculty_id: int, subject_id: int) -> bool:
     """
-    Score verified subject handling experience (0 to 25 points).
-    Internal faculty get points based on actual verified times taught.
-    External faculty receive a standard baseline for general domain fit.
+    Checks if a faculty member was previously confirmed as a question paper setter for this subject.
     """
-    if count is None:
-        return 5 if faculty_type == "external" else 0
-    if count >= 15:
-        return 25
-    if count >= 10:
-        return 22
-    if count >= 6:
-        return 18
-    if count >= 3:
-        return 14
-    if count >= 1:
-        return 10
-    return 0
+    # 1. Check relational AllocationSetter table
+    count = db.query(AllocationSetter).join(Allocation).filter(
+        AllocationSetter.faculty_id == faculty_id,
+        Allocation.subject_id == subject_id,
+        Allocation.status.in_(["Approved", "Confirmed"])
+    ).count()
+    if count > 0:
+        return True
+
+    # 2. Check legacy confirmed allocations
+    confirmed_allocs = db.query(Allocation).filter(
+        Allocation.subject_id == subject_id,
+        Allocation.status.in_(["Approved", "Confirmed"])
+    ).all()
+    import json
+    for a in confirmed_allocs:
+        try:
+            int_ids = json.loads(a.internal_faculty_ids or "[]")
+            ext_ids = json.loads(a.external_faculty_ids or "[]")
+            if faculty_id in int_ids or faculty_id in ext_ids:
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
-def compute_suitability(
-    faculty: Faculty,
-    subject_title: str,
-    subject_code: str,
-    min_handled: int,
-    rules: EligibilityRules,
-    existing_allocation_count: int = 0,
-    confirmed_mapping: FacultySubjectMapping | None = None
-) -> dict:
+def match_and_rank_faculty(
+    db: Session,
+    subject: Subject,
+    faculty_type: str,
+    academic_year: Optional[str] = None,
+    policy: Optional[EligibilityRules] = None
+) -> Dict[str, Any]:
     """
-    Computes a transparent, explainable 100-point suitability score:
-    - Subject Expertise & Domain Fit: 40 points (database-backed confirmed mapping)
-    - Verified Course Handling: 25 points
-    - Designation & Academic Seniority: 15 points
-    - Overall Teaching Experience: 10 points
-    - Statutory Eligibility Gate: 10 points
+    Evaluates and deterministically ranks all faculty candidates of a given type for a subject.
+    Order:
+    1. Exact subject experience (EXACT_EXPERIENCE confirmed mapping)
+    2. Specialization (SPECIALIZATION confirmed mapping)
+    3. Related expertise (RELATED confirmed mapping)
+    4. Lower combined workload (committed + reserved from ledger)
+    5. Avoid repeating the same subject
+    6. Higher relevant-subject experience
+    7. Higher total experience
+    8. Previous paper-setting experience
+    9. Faculty ID as final tie-breaker
     """
-    elig = check_eligibility(faculty, rules)
+    if policy is None:
+        policy = get_confirmed_policy(db)
 
-    # 1. Domain Fit (0 to 40)
-    # Database-backed confirmed expertise mapping replaces static ALIAS_MAP
-    norm_subj = _normalize(subject_title)
-    norm_code = _normalize(subject_code)
-    expertise_corpus = (faculty.expertise_text or "") + " " + " ".join([t.tag for t in faculty.expertise_tags])
-    norm_corpus = _normalize(expertise_corpus)
+    active_ay = academic_year or (policy.active_academic_year if policy else "2025-26")
 
-    domain_score = 0
-    if confirmed_mapping and confirmed_mapping.status == "CONFIRMED":
-        if confirmed_mapping.mapping_type == "EXACT_EXPERIENCE":
-            domain_score = 40
-        elif confirmed_mapping.mapping_type == "SPECIALIZATION":
-            domain_score = 35
-        elif confirmed_mapping.mapping_type == "RELATED":
-            domain_score = 30
+    # Fetch whitelist if external
+    disabled_institutions = set()
+    if faculty_type == "external":
+        disabled_rows = db.query(ExternalInstitution).filter_by(is_allowed=False).all()
+        disabled_institutions = {i.name.strip().lower() for i in disabled_rows if i.name}
+
+    roster = db.query(Faculty).filter_by(faculty_type=faculty_type).all()
+
+    eligible_pool: List[Dict[str, Any]] = []
+    not_eligible_pool: List[Dict[str, Any]] = []
+    pending_pool: List[Dict[str, Any]] = []
+    excluded_inst_count = 0
+
+    for fac in roster:
+        # Check institution exclusion for external faculty
+        if faculty_type == "external" and fac.institution:
+            if fac.institution.strip().lower() in disabled_institutions:
+                excluded_inst_count += 1
+                not_eligible_pool.append({
+                    "faculty_id": fac.id,
+                    "name": fac.name,
+                    "faculty_type": fac.faculty_type,
+                    "institution": fac.institution,
+                    "overall_status": "NOT ELIGIBLE",
+                    "reason": f"External institution '{fac.institution}' is disabled on the institutional whitelist."
+                })
+                continue
+
+        # Evaluate candidate against Module 9 policy engine
+        eval_res = evaluate_faculty_eligibility(
+            db=db,
+            faculty=fac,
+            subject=subject,
+            policy=policy,
+            academic_year=active_ay
+        )
+
+        overall = eval_res["overall_status"]
+        if overall == "ELIGIBLE":
+            # Retrieve confirmed mapping
+            mapping = db.query(FacultySubjectMapping).filter(
+                FacultySubjectMapping.faculty_id == fac.id,
+                FacultySubjectMapping.subject_id == subject.id,
+                or_(
+                    FacultySubjectMapping.status == "CONFIRMED",
+                    FacultySubjectMapping.is_confirmed == True
+                )
+            ).first()
+
+            mapping_type = mapping.mapping_type if mapping else "RELATED"
+            tier = get_mapping_tier(mapping_type)
+
+            # Combined workload from ledger (committed + reserved)
+            workload = get_faculty_workload(db, fac.id, active_ay)
+            combined_load = workload["total_active"]
+            committed_load = workload["committed"]
+            reserved_load = workload["reserved"]
+
+            # Avoid repeating subject
+            repeated = 1 if has_set_subject_before(db, fac.id, subject.id) else 0
+
+            # Relevant handling count
+            relevant_handling = mapping.times_handled if (mapping and mapping.times_handled is not None) else 0
+
+            # Total experience
+            total_exp = float(fac.experience_years or 0.0)
+
+            # Previous QP setting experience
+            prev_qp_exp = int(fac.assumed_times_handled or 0)
+
+            # Deterministic sorting tuple:
+            # 1. Tier (1=EXACT, 2=SPECIALIZATION, 3=RELATED)
+            # 2. Combined workload asc
+            # 3. Repeated subject asc (0 before 1)
+            # 4. Relevant course handling desc
+            # 5. Total experience desc
+            # 6. Previous QP assignments desc
+            # 7. Faculty ID asc (final tie-breaker)
+            sort_tuple = (
+                tier,
+                combined_load,
+                repeated,
+                -relevant_handling,
+                -total_exp,
+                -prev_qp_exp,
+                fac.id
+            )
+
+            tier_labels = {
+                1: f"Tier 1: Exact Course Experience ({mapping_type})",
+                2: f"Tier 2: Domain Specialization ({mapping_type})",
+                3: f"Tier 3: Related Subject Expertise ({mapping_type})"
+            }
+
+            candidate_record = {
+                "faculty_id": fac.id,
+                "db_serial_no": fac.db_serial_no,
+                "employee_id": fac.employee_id,
+                "name": fac.name,
+                "faculty_name": fac.name,
+                "designation": fac.designation,
+                "department": fac.department,
+                "institution": fac.institution,
+                "faculty_type": fac.faculty_type,
+                "qualification": fac.qualification,
+                "experience_years": fac.experience_years,
+                "has_completed_phd": is_phd_completed(fac.qualification),
+                "mapping_type": mapping_type,
+                "mapping_tier": tier,
+                "combined_workload": combined_load,
+                "committed_workload": committed_load,
+                "reserved_workload": reserved_load,
+                "capacity": eval_res["capacity"],
+                "repeated_subject": bool(repeated),
+                "relevant_handled_count": relevant_handling,
+                "course_handled_count": relevant_handling,
+                "course_handled_display": f"{relevant_handling} times" if relevant_handling else "0 times",
+                "assumed_paper_setting_count": prev_qp_exp,
+                "is_eligible": True,
+                "is_available": True,
+                "meets_min_handled": True,
+                "eligibility_status": "Qualified",
+                "email": fac.email,
+                "mobile": fac.mobile,
+                "criteria_reasons": {
+                    "tier": tier_labels.get(tier, f"Tier {tier}: {mapping_type}"),
+                    "workload": f"{combined_load}/{eval_res['capacity']} active workload ({committed_load} committed, {reserved_load} reserved)",
+                    "subject_repetition": "First-time setter for this subject" if not repeated else "Previously appointed for this subject",
+                    "relevant_handling": f"{relevant_handling} times handled course",
+                    "total_experience": f"{total_exp:.1f}y teaching experience",
+                    "qp_setting_history": f"{prev_qp_exp} prior QP setting assignments",
+                    "tie_breaker": f"Deterministic Faculty ID #{fac.id}"
+                },
+                "_sort_tuple": sort_tuple
+            }
+            eligible_pool.append(candidate_record)
+
+        elif overall == "PENDING VERIFICATION":
+            pending_pool.append({
+                "faculty_id": fac.id,
+                "name": fac.name,
+                "faculty_name": fac.name,
+                "faculty_type": fac.faculty_type,
+                "department": fac.department,
+                "institution": fac.institution,
+                "designation": fac.designation,
+                "qualification": fac.qualification,
+                "overall_status": "PENDING VERIFICATION",
+                "reason": eval_res["summary_reason"]
+            })
         else:
-            domain_score = 30
-    elif norm_subj in norm_corpus or (norm_code and norm_code in norm_corpus):
-        domain_score = 35
-    else:
-        overlap = _word_overlap(norm_subj, norm_corpus)
-        domain_score = round(min(25, overlap * 35))
+            not_eligible_pool.append({
+                "faculty_id": fac.id,
+                "name": fac.name,
+                "faculty_name": fac.name,
+                "faculty_type": fac.faculty_type,
+                "department": fac.department,
+                "institution": fac.institution,
+                "designation": fac.designation,
+                "qualification": fac.qualification,
+                "overall_status": "NOT ELIGIBLE",
+                "reason": eval_res["summary_reason"]
+            })
 
-    # 2. Course Handling History (0 to 25)
-    verified_count, source = get_verified_course_handling(faculty, subject_title, confirmed_mapping)
-    handling_score = _score_handling_count(verified_count, faculty.faculty_type)
+    # Sort eligible pool deterministically
+    eligible_pool.sort(key=lambda c: c["_sort_tuple"])
 
-    # 3. Designation Seniority (0 to 15)
-    seniority_score = _score_designation(faculty.designation)
-
-    # 4. Teaching Experience (0 to 10)
-    exp_score = _score_experience(faculty.experience_years)
-
-    # 5. Statutory Gate (0 or 10)
-    elig_gate_score = 10 if elig["is_eligible"] else 0
-
-    total_score = domain_score + handling_score + seniority_score + exp_score + elig_gate_score
-
-    # Handling threshold verification
-    if faculty.faculty_type == "internal":
-        meets_handled = (verified_count is not None and verified_count >= min_handled)
-        course_handled_display = f"{verified_count} times" if verified_count is not None else "Not Recorded"
-    else:
-        # External faculty: preserve provenance; do not invent count
-        meets_handled = True if elig["is_eligible"] else False
-        course_handled_display = "Course History Verification Required"
-
-    # Over-allocation check using capacity from database policy
-    capacity = int(rules.internal_capacity if faculty.faculty_type == "internal" else rules.external_capacity) if (rules and getattr(rules, "internal_capacity", None)) else int(rules.max_papers_per_faculty if rules else 2)
-    over_allocated = (existing_allocation_count >= capacity)
+    # Assign deterministic 1-based ranks and clean internal sorting tuple
+    for idx, c in enumerate(eligible_pool, start=1):
+        c["rank"] = idx
+        c.pop("_sort_tuple", None)
 
     return {
-        "faculty_id": faculty.id,
-        "db_serial_no": faculty.db_serial_no,
-        "employee_id": faculty.employee_id,
-        "faculty_name": faculty.name,
-        "designation": faculty.designation,
-        "department": faculty.department,
-        "institution": faculty.institution,
-        "faculty_type": faculty.faculty_type,
-        "qualification": faculty.qualification,
-        "experience_years": faculty.experience_years,
-        "eligibility_status": elig["status"],
-        "is_eligible": elig["is_eligible"],
-        "eligibility_reason": elig["reason"],
-        "email": faculty.email,
-        "mobile": faculty.mobile,
-        "expertise_text": faculty.expertise_text,
-        "course_handled_count": verified_count,
-        "course_handled_source": source,
-        "course_handled_display": course_handled_display,
-        "assumed_paper_setting_count": faculty.assumed_times_handled,
-        "meets_min_handled": meets_handled,
-        "is_available": faculty.is_available and not over_allocated,
-        "over_allocated": over_allocated,
-        "existing_allocation_count": existing_allocation_count,
-        "total_score": total_score,
-        "breakdown": {
-            "domain_fit": domain_score,
-            "course_handling": handling_score,
-            "seniority": seniority_score,
-            "experience": exp_score,
-            "eligibility_gate": elig_gate_score
+        "faculty_type": faculty_type,
+        "recommended": eligible_pool,
+        "not_eligible": not_eligible_pool,
+        "pending_verification": pending_pool,
+        "counts": {
+            "eligible": len(eligible_pool),
+            "not_eligible": len(not_eligible_pool),
+            "pending_verification": len(pending_pool),
+            "excluded_institutions": excluded_inst_count,
+            "total_evaluated": len(roster)
         }
     }
 
-
-# ─── Candidate Ranking Function ───────────────────────────────────────────────
 
 def rank_candidates(
     db: Session,
@@ -323,55 +304,30 @@ def rank_candidates(
     subject_code: str,
     min_handled: int,
     faculty_type: str,
-    rules: EligibilityRules,
-    allocation_counts: dict,
-    subject_id: int | None = None
-) -> list[dict]:
+    rules: Optional[EligibilityRules] = None,
+    allocation_counts: Optional[dict] = None,
+    subject_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
     """
-    Ranks faculty candidates for a given subject and minimum course-handling count.
-    Uses database-backed CONFIRMED expertise mappings for domain fit scoring.
-    SUGGESTED and REJECTED mappings are strictly ignored.
-    Sort priority:
-    1. Eligible, available, and meets minimum course handling criteria
-    2. Highest suitability score descending
+    Backward-compatible ranking interface returning deterministically ordered eligible faculty.
+    Strictly removes arbitrary 0-100 scores.
     """
-    roster_query = db.query(Faculty).filter_by(faculty_type=faculty_type)
-    if faculty_type == "external":
-        from ..models import ExternalInstitution
-        allowed_institutions = [i.name for i in db.query(ExternalInstitution).filter_by(is_allowed=True).all()]
-        roster_query = roster_query.filter(Faculty.institution.in_(allowed_institutions))
-    roster = roster_query.all()
-    results = []
-
-    # Resolve confirmed mappings for this subject from database (replaces ALIAS_MAP)
-    confirmed_map_by_faculty = {}
-    if subject_id is None:
-        subj = db.query(Subject).filter(
-            (Subject.title == subject_title) | (Subject.course_code == subject_code)
-        ).first()
-        if subj:
-            subject_id = subj.id
-
+    subject = None
     if subject_id:
-        confirmed = db.query(FacultySubjectMapping).filter(
-            FacultySubjectMapping.subject_id == subject_id,
-            FacultySubjectMapping.status == "CONFIRMED"
-        ).all()
-        for m in confirmed:
-            confirmed_map_by_faculty[m.faculty_id] = m
+        subject = db.query(Subject).filter_by(id=subject_id).first()
+    if not subject:
+        subject = db.query(Subject).filter(
+            or_(Subject.course_code == subject_code, Subject.title == subject_title)
+        ).first()
 
-    for f in roster:
-        existing = allocation_counts.get(f.id, 0)
-        conf_m = confirmed_map_by_faculty.get(f.id)
-        rec = compute_suitability(
-            f, subject_title, subject_code, min_handled, rules, existing, confirmed_mapping=conf_m
-        )
-        results.append(rec)
+    if not subject:
+        return []
 
-    # Sort order
-    def sort_key(r):
-        is_top = 0 if (r["is_eligible"] and r["meets_min_handled"] and r["is_available"]) else 1
-        return (is_top, -r["total_score"], -(r["course_handled_count"] or 0))
+    result = match_and_rank_faculty(
+        db=db,
+        subject=subject,
+        faculty_type=faculty_type,
+        policy=rules
+    )
 
-    results.sort(key=sort_key)
-    return results
+    return result["recommended"]
