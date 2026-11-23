@@ -186,6 +186,7 @@
         <button class="nav-pill" id="nav-datasets" onclick="switchTab('datasets')" style="display:none;">📁 Datasets & ETL</button>
         <button class="nav-pill" onclick="switchTab('history')">📜 Order Archive</button>
         <button class="nav-pill" onclick="switchTab('notifications')">📬 Notifications <span id="header-unread-count" class="badge badge-amber" style="display:none; font-size:10px; margin-left:4px; padding:2px 6px; border-radius:10px;">0</span></button>
+        <button class="nav-pill" id="nav-acceptance" onclick="switchTab('acceptance')" style="display:none;">🧪 Test Suites</button>
         <button class="nav-pill" onclick="switchTab('audit')">🛡️ Audit Logs</button>
         <button class="nav-pill" onclick="switchTab('settings')">⚙️ Settings</button>
       </nav>
@@ -1290,6 +1291,66 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <!-- =====================================================================
+           MODULE 15: ACCEPTANCE TESTING & SECURITY VERIFICATION SUITES
+           ===================================================================== -->
+      <div id="tab-acceptance" class="tab-pane" style="display:none;">
+        <div class="page-title-banner" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div>
+            <h2>🧪 Automated Acceptance Test Suites</h2>
+            <p>Execute real end-to-end integration and security test suites on temporary isolated databases (3-minute ceiling per suite).</p>
+          </div>
+          <div style="display:flex; gap:10px;">
+            <button class="btn btn-primary" id="btn-run-all-tests" onclick="runAllAcceptanceTests()">
+              ▶ Run All Acceptance Suites
+            </button>
+          </div>
+        </div>
+
+        <!-- Overall Summary Banner -->
+        <div id="acceptance-summary-banner" style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:12px 18px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <div style="display:flex; gap:20px; align-items:center;">
+            <div><span style="font-size:12px; color:var(--text-muted);">Total Suites:</span> <strong id="accept-total-count" style="font-size:14px;">12</strong></div>
+            <div><span style="font-size:12px; color:var(--text-muted);">Passed:</span> <strong id="accept-pass-count" style="font-size:14px; color:#16A34A;">0</strong></div>
+            <div><span style="font-size:12px; color:var(--text-muted);">Failed:</span> <strong id="accept-fail-count" style="font-size:14px; color:#DC2626;">0</strong></div>
+            <div><span style="font-size:12px; color:var(--text-muted);">Status:</span> <strong id="accept-global-status" style="font-size:13px; color:#64748B;">Ready to Execute</strong></div>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted);">
+            ⚡ DB Isolation: <code>tempfile.gettempdir()</code> (zero production database impact)
+          </div>
+        </div>
+
+        <!-- Acceptance Suites Table -->
+        <div class="faculty-section">
+          <div class="data-table-container">
+            <table class="data-table" id="table-acceptance-suites">
+              <thead>
+                <tr>
+                  <th style="width:140px;">Module</th>
+                  <th>Test Suite & Description</th>
+                  <th style="width:200px;">Test File</th>
+                  <th style="width:110px; text-align:center;">Result</th>
+                  <th style="width:110px; text-align:center;">Duration</th>
+                  <th style="width:120px; text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-acceptance-suites">
+                <tr><td colspan="6" style="text-align:center; padding:30px; color:var(--text-muted);">Loading test suites...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Test Console Output Drawer -->
+        <div id="acceptance-console-card" style="margin-top:20px; background:#0F172A; border-radius:8px; padding:16px; color:#E2E8F0; font-family:monospace; font-size:12px; line-height:1.5; display:none;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #334155; padding-bottom:8px;">
+            <div style="font-weight:700; color:#38BDF8;" id="console-title">🖥️ Test Execution Log Output</div>
+            <button onclick="document.getElementById('acceptance-console-card').style.display='none'" style="background:none; border:none; color:#94A3B8; cursor:pointer; font-size:14px;">✕ Close</button>
+          </div>
+          <pre id="acceptance-console-output" style="white-space:pre-wrap; word-break:break-word; max-height:360px; overflow-y:auto; margin:0; padding:4px;"></pre>
         </div>
       </div>
 

@@ -20,7 +20,7 @@ from .services.importer import (
     seed_eligibility_rules
 )
 from .services.migration import run_database_migrations
-from .routers import syllabus, faculty, allocation, reports, auth, admin, mappings, eligibility, notifications
+from .routers import syllabus, faculty, allocation, reports, auth, admin, mappings, eligibility, notifications, acceptance
 from .routers.auth import get_or_create_admin
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -89,6 +89,7 @@ app.include_router(admin.router)
 app.include_router(mappings.router)
 app.include_router(eligibility.router)
 app.include_router(notifications.router)
+app.include_router(acceptance.router)
 
 # Mount frontend static directories
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")

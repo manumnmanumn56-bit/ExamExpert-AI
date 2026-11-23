@@ -25,6 +25,24 @@
 | **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **DONE** | `tests/test_module12_hod_approval.py` | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
 | **Module 13 (Slice A)** | In-App & Email Notifications | **DONE** | `tests/test_module13_notifications.py` | In-app alerts (submitted, approved, rejected, assigned), personal inbox, unread counts, SMTP fallback. |
 | **Module 14 (Slice B)** | Real Data Reports & Analytics | **DONE** | `tests/test_module14_reports.py` | Multi-dimensional real data reports, RBAC scoping, Excel/PDF/print exports, formula injection safety. |
+| **Module 15 (Slice C)** | Acceptance Testing & Security Review | **DONE** | `tests/test_module15_acceptance.py` | Admin test execution runner on temp isolated DB, path-traversal defense, 3-min ceiling, SECURITY_AUDIT.md. |
+
+---
+
+## Slice C (Module 15) Architecture Highlights
+
+- **Automated Acceptance Test Runner**:
+  - Whitelisted test suite registry covering Modules 1 through 14.
+  - Path-traversal defense with rejection of invalid or malicious test targets (HTTP 400).
+  - 3-minute hard ceiling timeout on test execution.
+  - Isolated database sandboxing (`tempfile.gettempdir()`) via `test_db_helper.py` ensuring zero impact on live production data.
+- **Role-Based Execution Security**:
+  - Admin: Full privilege to list test catalog and execute individual or all acceptance suites.
+  - HOD & Faculty: Access strictly forbidden with HTTP 403.
+  - Audit logging of test runs with timing and PASS/FAIL outcomes.
+- **Formal Security Audit (`SECURITY_AUDIT.md`)**:
+  - Full mitigation analysis across 8 critical threat vectors: SQLi, XSS, RBAC, Sessions, Rate Limiting, Secrets, Uploads, CORS.
+  - Complete removal of hardcoded limits, simulated logs, and fake data.
 
 ---
 

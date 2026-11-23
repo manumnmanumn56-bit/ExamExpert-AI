@@ -173,6 +173,9 @@ function showAppView() {
   const navDatasets = document.getElementById("nav-datasets");
   if (navDatasets) navDatasets.style.display = isAdmin ? "inline-flex" : "none";
 
+  const navAcceptance = document.getElementById("nav-acceptance");
+  if (navAcceptance) navAcceptance.style.display = isAdmin ? "inline-flex" : "none";
+
   const btnAddSubject = document.getElementById("btn-add-subject");
   if (btnAddSubject) btnAddSubject.style.display = isAdmin ? "inline-flex" : "none";
 
@@ -693,6 +696,7 @@ function switchTab(tabId) {
   if (tabId === "users") loadUsersList();
   if (tabId === "history") loadAllocationHistory();
   if (tabId === "notifications") loadNotifications();
+  if (tabId === "acceptance") loadAcceptanceTestSuites();
   if (tabId === "audit") loadAuditLogs();
   if (tabId === "datasets") loadImportHistory();
   if (tabId === "settings") { loadPolicySettings(); loadEligibilitySubjects(); }
@@ -3778,3 +3782,188 @@ async function handleCreateMappingSubmit(event) {
     }
   }
 }
+
+
+// ─── Module 15: Acceptance Testing & Security Suite Engine ────────────────────
+let acceptanceSuitesData = [];
+
+async function loadAcceptanceTestSuites() {
+  const tbody = document.getElementById("tbody-acceptance-suites");
+  if (!tbody) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/acceptance/test-suites`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#DC2626; padding:20px;">Failed to load acceptance test catalog (${res.status}). Admin authorization required.</td></tr>`;
+      return;
+    }
+
+    const data = await res.json();
+    acceptanceSuitesData = data.test_suites || [];
+    document.getElementById("accept-total-count").textContent = acceptanceSuitesData.length;
+
+    renderAcceptanceSuitesTable();
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#DC2626; padding:20px;">Network error loading acceptance test suites.</td></tr>`;
+  }
+}
+
+function renderAcceptanceSuitesTable() {
+  const tbody = document.getElementById("tbody-acceptance-suites");
+  if (!tbody) return;
+
+  if (acceptanceSuitesData.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:var(--text-muted);">No acceptance test suites registered.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = acceptanceSuitesData.map(suite => {
+    const statusBadge = suite.lastStatus === "PASS"
+      ? `<span class="badge badge-success" style="font-weight:700;">PASS</span>`
+      : suite.lastStatus === "FAIL"
+      ? `<span class="badge badge-danger" style="font-weight:700;">FAIL</span>`
+      : `<span class="badge badge-neutral" style="color:var(--text-muted);">Pending</span>`;
+
+    const durationText = suite.lastDuration !== undefined ? `${suite.lastDuration}s` : "--";
+
+    return `
+      <tr id="row-suite-${suite.id}">
+        <td><strong style="color:var(--primary); font-size:12px;">${escapeHtml(suite.module)}</strong></td>
+        <td>
+          <div style="font-weight:600; font-size:13px; color:var(--text-main);">${escapeHtml(suite.title)}</div>
+          <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${escapeHtml(suite.description)}</div>
+        </td>
+        <td><code style="font-size:11.5px; background:var(--bg-card-alt); padding:2px 6px; border-radius:4px;">${escapeHtml(suite.file_name)}</code></td>
+        <td style="text-align:center;" id="status-suite-${suite.id}">${statusBadge}</td>
+        <td style="text-align:center; font-size:12px; font-family:monospace;" id="duration-suite-${suite.id}">${durationText}</td>
+        <td style="text-align:right;">
+          <div style="display:flex; justify-content:flex-end; gap:6px;">
+            <button class="btn btn-secondary btn-sm" id="btn-run-${suite.id}" onclick="runSingleAcceptanceTest('${suite.file_name}', '${suite.id}')" style="font-size:11.5px; padding:3px 8px;">
+              ▶ Run
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-log-${suite.id}" onclick="viewSuiteLog('${suite.id}')" style="font-size:11.5px; padding:3px 6px; display:${suite.lastOutput ? 'inline-flex' : 'none'};" title="View Console Output">
+              📄
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function runSingleAcceptanceTest(fileName, suiteId) {
+  const btn = document.getElementById(`btn-run-${suiteId}`);
+  const statusEl = document.getElementById(`status-suite-${suiteId}`);
+  const durEl = document.getElementById(`duration-suite-${suiteId}`);
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "⏳ Running...";
+  }
+  if (statusEl) {
+    statusEl.innerHTML = `<span class="badge badge-amber">Running...</span>`;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/acceptance/run-test`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify({ test_file: fileName })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.result) {
+      const r = data.result;
+      const targetSuite = acceptanceSuitesData.find(s => s.id === suiteId);
+      if (targetSuite) {
+        targetSuite.lastStatus = r.status;
+        targetSuite.lastDuration = r.duration_seconds;
+        targetSuite.lastOutput = (r.stdout || "") + "\n" + (r.stderr || "");
+      }
+
+      if (r.status === "PASS") {
+        showToast("Suite Passed", `${fileName} executed successfully (${r.duration_seconds}s).`, "success");
+      } else {
+        showToast("Suite Failed", `${fileName} failed with status: ${r.status}.`, "error");
+      }
+
+      renderAcceptanceSuitesTable();
+      updateAcceptanceGlobalCounters();
+      viewSuiteLog(suiteId);
+    } else {
+      showToast("Execution Error", data.detail || "Could not execute test suite.", "error");
+      if (statusEl) statusEl.innerHTML = `<span class="badge badge-danger">Error</span>`;
+    }
+  } catch (err) {
+    showToast("Network Error", "Failed to communicate with test runner engine.", "error");
+    if (statusEl) statusEl.innerHTML = `<span class="badge badge-danger">Failed</span>`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "▶ Run";
+    }
+  }
+}
+
+async function runAllAcceptanceTests() {
+  const mainBtn = document.getElementById("btn-run-all-tests");
+  if (mainBtn) {
+    mainBtn.disabled = true;
+    mainBtn.textContent = "⏳ Running All Acceptance Suites...";
+  }
+
+  showToast("Acceptance Run Started", "Executing all test suites sequentially on isolated temporary databases.", "info");
+
+  for (const suite of acceptanceSuitesData) {
+    await runSingleAcceptanceTest(suite.file_name, suite.id);
+  }
+
+  if (mainBtn) {
+    mainBtn.disabled = false;
+    mainBtn.textContent = "▶ Run All Acceptance Suites";
+  }
+
+  showToast("Acceptance Run Completed", "All acceptance test suites have completed execution.", "success");
+}
+
+function updateAcceptanceGlobalCounters() {
+  let passed = 0;
+  let failed = 0;
+  for (const s of acceptanceSuitesData) {
+    if (s.lastStatus === "PASS") passed++;
+    if (s.lastStatus === "FAIL" || s.lastStatus === "TIMEOUT" || s.lastStatus === "ERROR") failed++;
+  }
+  document.getElementById("accept-pass-count").textContent = passed;
+  document.getElementById("accept-fail-count").textContent = failed;
+  const statusEl = document.getElementById("accept-global-status");
+  if (failed > 0) {
+    statusEl.textContent = `${failed} Suite(s) Failed`;
+    statusEl.style.color = "#DC2626";
+  } else if (passed > 0 && passed === acceptanceSuitesData.length) {
+    statusEl.textContent = "All Suites Passed (100%)";
+    statusEl.style.color = "#16A34A";
+  } else if (passed > 0) {
+    statusEl.textContent = `In Progress (${passed}/${acceptanceSuitesData.length} Passed)`;
+    statusEl.style.color = "#2563EB";
+  }
+}
+
+function viewSuiteLog(suiteId) {
+  const targetSuite = acceptanceSuitesData.find(s => s.id === suiteId);
+  if (!targetSuite || !targetSuite.lastOutput) return;
+
+  const card = document.getElementById("acceptance-console-card");
+  const title = document.getElementById("console-title");
+  const pre = document.getElementById("acceptance-console-output");
+
+  title.textContent = `🖥️ Output Log: ${targetSuite.file_name} [${targetSuite.lastStatus}] (${targetSuite.lastDuration}s)`;
+  pre.textContent = targetSuite.lastOutput.trim() || "(No console output produced)";
+  card.style.display = "block";
+  card.scrollIntoView({ behavior: "smooth" });
+}
+
