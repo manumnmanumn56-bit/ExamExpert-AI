@@ -27,6 +27,22 @@
 | **Module 14 (Slice B)** | Real Data Reports & Analytics | **DONE** | `tests/test_module14_reports.py` | Multi-dimensional real data reports, RBAC scoping, Excel/PDF/print exports, formula injection safety. |
 | **Module 15 (Slice C)** | Acceptance Testing & Security Review | **DONE** | `tests/test_module15_acceptance.py` | Admin test execution runner on temp isolated DB, path-traversal defense, 3-min ceiling, SECURITY_AUDIT.md. |
 | **Slice D (Cleanup)** | Data Integrity & Governance Cleanup | **DONE** | `tests/test_sliceD_cleanup.py` | Nagamani S workbook email match, syllabus title key (0 conflict dry-run), tiered mappings & untouched RELATED purge. |
+| **Module 16 (Slice E)**| Comprehensive Institutional Documentation| **DONE** | N/A (Doc Suite) | README.md, docs/ (User Manual, Install, Env, Fresh DB Rebuild, Schema, API, Rules, Deployment). |
+
+---
+
+## Slice E (Module 16) Architecture Highlights
+
+- **Complete Technical & User Documentation**:
+  - `README.md`: Institutional project overview, architecture badge matrix, quickstart, role overview.
+  - `docs/USER_MANUAL.md`: Step-by-step role walkthroughs for Admin, HOD, and Faculty.
+  - `docs/INSTALL_GUIDE.md`: Clean environment setup from Git repository and Python 3.11+.
+  - `docs/ENV_GUIDE.md`: Complete `.env` parameters guide, secret safeguards, and SMTP fallback.
+  - `docs/FRESH_DB_REBUILD.md`: Step-by-step procedure to rebuild fresh SQLite database from Excel workbooks on a new machine.
+  - `docs/SCHEMA_DOCUMENT.md`: Complete SQLite schema documentation, ER diagram, and table specifications.
+  - `docs/API_REFERENCE.md`: Exhaustive REST endpoint listing with HTTP methods, paths, and RBAC rules.
+  - `docs/RULES_AND_ALGORITHMS.md`: Details of 9-level deterministic matching, eligibility, and MCA 4-sem constraint.
+  - `docs/DEPLOYMENT_AND_LIMITATIONS.md`: Production deployment guidance and policy flags awaiting COE committee confirmation.
 
 ---
 
