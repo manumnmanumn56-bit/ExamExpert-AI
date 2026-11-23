@@ -294,6 +294,7 @@ function showAppView() {
   }
 
   initializeDashboard();
+  loadUnreadNotificationCount();
 }
 
 async function verifyExistingSession() {
@@ -1879,32 +1880,137 @@ async function loadAllocationHistory() {
 }
 
 
-// ─── Module 4: Notifications Log ──────────────────────────────────────────────
-async function loadNotifications() {
+// ─── Module 13: In-App Notifications & Header Badge ─────────────────────────
+async function loadUnreadNotificationCount() {
+  if (!state.token) return;
   try {
-    const res = await fetch(`${API_BASE}/api/reports/notifications`);
+    const res = await fetch(`${API_BASE}/api/notifications/unread-count`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) return;
     const data = await res.json();
-    const tbody = document.getElementById("tbody-notifications");
-    tbody.innerHTML = "";
+    const badge = document.getElementById("header-unread-count");
+    if (badge) {
+      if (data.unread_count > 0) {
+        badge.textContent = data.unread_count;
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+    }
+  } catch (err) {}
+}
+
+async function loadNotifications() {
+  if (!state.token) return;
+  const tbody = document.getElementById("tbody-notifications");
+  const emptyState = document.getElementById("notif-empty-state");
+  const tableContainer = document.getElementById("notif-table-container");
+  const unreadTag = document.getElementById("notif-unread-tag");
+  const smtpBanner = document.getElementById("notif-smtp-banner");
+
+  if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);"><span class="spinner-sm"></span> Loading notifications...</td></tr>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/notifications/my`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--error-red); padding:16px;">Failed to load notifications.</td></tr>`;
+      return;
+    }
+    const data = await res.json();
+
+    // SMTP Banner
+    if (smtpBanner) {
+      if (data.smtp_configured) {
+        smtpBanner.style.background = "#EFF6FF";
+        smtpBanner.style.borderColor = "#BFDBFE";
+        smtpBanner.style.color = "#1E40AF";
+        smtpBanner.innerHTML = `<span>✓ <strong>SMTP Email Service:</strong> Configured & Active in .env. Email dispatches are enabled.</span><span style="font-size:11px; background:#DBEAFE; padding:2px 8px; border-radius:10px; font-weight:600;">Email + In-App</span>`;
+      } else {
+        smtpBanner.style.background = "#FFFBEB";
+        smtpBanner.style.borderColor = "#FDE68A";
+        smtpBanner.style.color = "#92400E";
+        smtpBanner.innerHTML = `<span>ℹ️ <strong>SMTP Email Notice:</strong> SMTP is not configured in .env. Notifications are securely delivered to your personal in-app inbox.</span><span style="font-size:11px; background:#FEF3C7; padding:2px 8px; border-radius:10px; font-weight:600;">In-App Active</span>`;
+      }
+      smtpBanner.style.display = "flex";
+    }
+
+    // Unread tag
+    if (unreadTag) {
+      if (data.unread_count > 0) {
+        unreadTag.textContent = `${data.unread_count} Unread`;
+        unreadTag.style.display = "inline-block";
+      } else {
+        unreadTag.style.display = "none";
+      }
+    }
+    loadUnreadNotificationCount();
 
     if (!data.notifications || data.notifications.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-state-icon">📬</div><div class="empty-state-title">No Notification Logs</div><div class="empty-state-desc">Email and SMS dispatch logs prepared for appointed setters will be recorded here.</div></div></td></tr>`;
+      if (tableContainer) tableContainer.style.display = "none";
+      if (emptyState) emptyState.style.display = "block";
       return;
     }
 
+    if (tableContainer) tableContainer.style.display = "block";
+    if (emptyState) emptyState.style.display = "none";
+    if (tbody) tbody.innerHTML = "";
+
     data.notifications.forEach(n => {
       const tr = document.createElement("tr");
+      if (!n.is_read) tr.style.background = "#F0F9FF";
+
+      let eventBadge = `<span class="badge badge-blue">${escapeHtml(n.event_type || 'ALERT')}</span>`;
+      if (n.event_type === "REQUEST_SUBMITTED") eventBadge = `<span class="badge" style="background:#FEF3C7; color:#92400E;">SUBMITTED</span>`;
+      if (n.event_type === "REQUEST_APPROVED") eventBadge = `<span class="badge badge-green">APPROVED</span>`;
+      if (n.event_type === "REQUEST_REJECTED") eventBadge = `<span class="badge" style="background:#FEE2E2; color:#991B1B;">REJECTED</span>`;
+      if (n.event_type === "FACULTY_ASSIGNED") eventBadge = `<span class="badge badge-blue">APPOINTMENT</span>`;
+
       tr.innerHTML = `
-        <td>${n.sent_at.replace('T', ' ').substring(0, 19)}</td>
-        <td><span class="badge ${n.channel === 'Email' ? 'badge-blue' : 'badge-amber'}">${n.channel}</span></td>
-        <td><strong>${n.faculty_name}</strong></td>
-        <td><code>${n.recipient}</code></td>
-        <td style="max-width:320px; font-size:11.5px;">${n.message_preview}</td>
-        <td><span class="badge badge-green">${n.status}</span></td>
+        <td style="font-size:12px; color:var(--text-muted);">${n.created_at ? n.created_at.replace('T', ' ').substring(0, 19) : '—'}</td>
+        <td>${eventBadge}</td>
+        <td><strong style="color:var(--primary-navy);">${escapeHtml(n.title)}</strong></td>
+        <td style="font-size:12px; color:var(--text-dark); max-width:340px; line-height:1.5;">${escapeHtml(n.message)}</td>
+        <td>
+          ${n.is_read ? '<span class="badge" style="background:#F1F5F9; color:#64748B;">Read</span>' : '<span class="badge badge-amber">● Unread</span>'}
+        </td>
+        <td>
+          ${!n.is_read ? `<button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="handleMarkNotificationRead(${n.id})">Mark Read</button>` : '<span style="color:var(--text-muted); font-size:11px;">—</span>'}
+        </td>
       `;
       tbody.appendChild(tr);
     });
-  } catch (e) {}
+
+  } catch (err) {
+    console.error("Failed to load notifications:", err);
+  }
+}
+
+async function handleMarkNotificationRead(id) {
+  try {
+    const res = await fetch(`${API_BASE}/api/notifications/${id}/read`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (res.ok) {
+      loadNotifications();
+    }
+  } catch (err) {}
+}
+
+async function handleMarkAllNotificationsRead() {
+  try {
+    const res = await fetch(`${API_BASE}/api/notifications/mark-all-read`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (res.ok) {
+      showToast("Inbox Updated", "All notifications marked as read.", "success");
+      loadNotifications();
+    }
+  } catch (err) {}
 }
 
 

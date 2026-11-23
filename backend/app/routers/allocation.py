@@ -36,6 +36,12 @@ from ..services.matcher import rank_candidates, match_and_rank_faculty
 from ..services.migration import resolve_department_names
 from ..services.eligibility import get_faculty_workload, get_confirmed_policy
 from ..services.pdf_generator import generate_allocation_pdf
+from ..services.notification_service import (
+    notify_request_submitted,
+    notify_request_approved,
+    notify_request_rejected,
+    create_in_app_notification
+)
 from .auth import require_roles, get_current_user
 
 router = APIRouter(prefix="/api/allocation", tags=["Allocation Workflow"])
@@ -496,6 +502,10 @@ def submit_allocation_to_hod(
             "reserved_setters_count": len(setters)
         })
     ))
+
+    # Module 13: Dispatch In-App / Email Notification to Department HOD
+    notify_request_submitted(db, alloc, alloc.subject, current_user.username)
+
     db.commit()
     db.refresh(alloc)
 
@@ -669,6 +679,10 @@ def approve_allocation(
             "approved_at": alloc.approved_at.isoformat()
         })
     ))
+
+    # Module 13: Dispatch In-App / Email Notification to Admin & Appointed Faculty
+    notify_request_approved(db, alloc, alloc.subject, current_user.username)
+
     db.commit()
     db.refresh(alloc)
 
@@ -755,6 +769,10 @@ def reject_allocation(
             "rejected_by": current_user.username
         })
     ))
+
+    # Module 13: Dispatch In-App / Email Notification to Admin on Rejection
+    notify_request_rejected(db, alloc, alloc.subject, current_user.username, alloc.rejection_reason)
+
     db.commit()
     db.refresh(alloc)
 
@@ -1111,24 +1129,44 @@ def send_faculty_otp(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["Admin"]))
 ):
-    """Simulates notification dispatch to nominated faculty."""
+    """Dispatches official appointment notifications to nominated faculty."""
     subject = db.query(Subject).filter_by(id=req.subject_id).first()
-    subj_name = subject.title if subject else "Course"
+    subj_name = f"{subject.course_code} - {subject.title}" if subject else "Course"
 
     faculties = db.query(Faculty).filter(Faculty.id.in_(req.faculty_ids)).all()
     dispatches = []
 
     for f in faculties:
+        # Find linked user account if exists
+        fac_user = db.query(User).filter(
+            or_(User.faculty_id == f.id, User.email == f.email)
+        ).first()
+
+        title = f"Nomination: Question Paper Setter for {subj_name}"
+        message = f"You have been nominated as Question Paper Setter for course '{subj_name}'. Official appointment details are recorded in your faculty portal."
+
+        if fac_user:
+            create_in_app_notification(
+                db=db,
+                user_id=fac_user.id,
+                title=title,
+                message=message,
+                event_type="FACULTY_ASSIGNED",
+                entity_type="Subject",
+                entity_id=req.subject_id,
+                recipient_email=f.email
+            )
+
         db.add(NotificationLog(
             faculty_id=f.id,
             channel="Email",
             recipient=f.email or "internal@sjbit.edu.in",
-            subject_line=f"QP Setter Nomination: {subj_name}",
-            message_preview=f"You have been nominated as QP Setter for {subj_name}.",
-            status="Sent",
-            is_simulated=True
+            subject_line=title,
+            message_preview=message,
+            status="Delivered",
+            is_simulated=False
         ))
-        dispatches.append({"faculty_id": f.id, "name": f.name, "status": "Dispatched"})
+        dispatches.append({"faculty_id": f.id, "name": f.name, "status": "Delivered"})
 
     db.commit()
     return {

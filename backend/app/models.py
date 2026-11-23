@@ -239,6 +239,24 @@ class AllocationConflict(Base):
     resolved = Column(Boolean, default=False)
 
 
+class InAppNotification(Base):
+    __tablename__ = "in_app_notifications"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_email = Column(String(200), nullable=True)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    event_type = Column(String(50), nullable=False)  # 'REQUEST_SUBMITTED' | 'REQUEST_APPROVED' | 'REQUEST_REJECTED' | 'FACULTY_ASSIGNED'
+    entity_type = Column(String(50), nullable=True)  # 'Allocation'
+    entity_id = Column(Integer, nullable=True)
+    is_read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    read_at = Column(DateTime, nullable=True)
+    email_status = Column(String(50), default="NOT_CONFIGURED")  # 'SENT' | 'FAILED' | 'NOT_CONFIGURED'
+
+    user = relationship("User", backref="in_app_notifications")
+
+
 class NotificationLog(Base):
     __tablename__ = "notification_logs"
     id = Column(Integer, primary_key=True)

@@ -23,6 +23,23 @@
 | **Module 10 (Slice 2)** | Deterministic Matching Engine | **DONE** | `tests/test_module10_matching.py` | 9-level deterministic ranking, no arbitrary scores, explainable criteria reasons, RBAC. |
 | **Module 11 (Slice 3)** | Allocation Request & Recommendation UI | **DONE** | `tests/test_module11_allocation.py` | Mode splits (50:50, Internal/External only), MCA 4-sem rule, RESERVED ledger entries. |
 | **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **DONE** | `tests/test_module12_hod_approval.py` | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
+| **Module 13 (Slice A)** | In-App & Email Notifications | **DONE** | `tests/test_module13_notifications.py` | In-app alerts (submitted, approved, rejected, assigned), personal inbox, unread counts, SMTP fallback. |
+
+---
+
+## Slice A (Module 13) Architecture Highlights
+
+- **Event-Driven Notifications**:
+  - HOD alerted on new allocation submissions for their department (`REQUEST_SUBMITTED`).
+  - Admin alerted on HOD approval (`REQUEST_APPROVED`) and rejection with reasons (`REQUEST_REJECTED`).
+  - Appointed Faculty alerted on official paper-setting nominations (`FACULTY_ASSIGNED`).
+- **User Privacy & Inbox Scoping**:
+  - `GET /api/notifications/my` strictly filters to the authenticated user's records.
+  - Cross-user updates are prevented.
+  - Real-time unread counts update the header notification badge.
+- **Credential & Secret Protection**:
+  - Zero OTPs, passwords, or SMTP secrets exposed in notification payloads or message logs.
+  - Transparent banner displayed if SMTP is unconfigured in `.env`.
 
 ---
 

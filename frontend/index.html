@@ -185,7 +185,7 @@
         <button class="nav-pill" id="nav-users" onclick="switchTab('users')" style="display:none;">👥 Users</button>
         <button class="nav-pill" id="nav-datasets" onclick="switchTab('datasets')" style="display:none;">📁 Datasets & ETL</button>
         <button class="nav-pill" onclick="switchTab('history')">📜 Order Archive</button>
-        <button class="nav-pill" onclick="switchTab('notifications')">📬 Notifications</button>
+        <button class="nav-pill" onclick="switchTab('notifications')">📬 Notifications <span id="header-unread-count" class="badge badge-amber" style="display:none; font-size:10px; margin-left:4px; padding:2px 6px; border-radius:10px;">0</span></button>
         <button class="nav-pill" onclick="switchTab('audit')">🛡️ Audit Logs</button>
         <button class="nav-pill" onclick="switchTab('settings')">⚙️ Settings</button>
       </nav>
@@ -702,25 +702,48 @@
 
 
       <!-- =====================================================================
-           MODULE 4: NOTIFICATION DISPATCH LOGS
+           MODULE 13: IN-APP NOTIFICATIONS INBOX
            ===================================================================== -->
       <div id="tab-notifications" class="tab-pane" style="display:none;">
         <div class="page-title-banner">
-          <h2>Email & SMS Dispatch Notifications</h2>
-          <p>Review official communication logs and appointment notifications prepared for selected faculty.</p>
+          <h2>My Institutional Notification Inbox</h2>
+          <p>Review personalized notifications for allocation requests, HOD approvals, appointment orders, and status updates.</p>
         </div>
 
-        <div class="faculty-section">
-          <div class="data-table-container">
+        <!-- SMTP Status Notice Banner -->
+        <div id="notif-smtp-banner" style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:6px; padding:10px 16px; margin-bottom:16px; font-size:12.5px; color:#92400E; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+          <span>ℹ️ <strong>SMTP Email Notice:</strong> SMTP is not configured in .env. Notifications are securely delivered to your personal in-app inbox.</span>
+          <span style="font-size:11px; background:#FEF3C7; padding:2px 8px; border-radius:10px; font-weight:600;">In-App Active</span>
+        </div>
+
+        <div class="selection-grid-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="selection-grid-title" style="margin-bottom:0;">Inbox Messages</span>
+              <span id="notif-unread-tag" class="badge badge-amber" style="display:none;">0 Unread</span>
+            </div>
+            <div style="display:flex; gap:10px;">
+              <button class="btn btn-secondary" onclick="handleMarkAllNotificationsRead()" id="btn-mark-all-read">✓ Mark All as Read</button>
+              <button class="btn btn-secondary" onclick="loadNotifications()">🔄 Refresh</button>
+            </div>
+          </div>
+
+          <div id="notif-empty-state" style="display:none; text-align:center; padding:40px 20px; color:var(--text-muted);">
+            <div style="font-size:36px; margin-bottom:8px;">📭</div>
+            <h4 style="margin:0 0 4px 0; color:var(--text-dark);">Your Inbox is Clean</h4>
+            <p style="margin:0; font-size:13px;">You have no notifications at this time.</p>
+          </div>
+
+          <div class="data-table-container" id="notif-table-container">
             <table class="data-table" id="table-notifications">
               <thead>
                 <tr>
-                  <th>Timestamp</th>
-                  <th>Channel</th>
-                  <th>Recipient Faculty</th>
-                  <th>Address / Phone</th>
-                  <th>Message Body</th>
-                  <th>Delivery Status</th>
+                  <th style="width:140px;">Received At</th>
+                  <th style="width:130px;">Event Type</th>
+                  <th>Notification Title</th>
+                  <th>Message Details</th>
+                  <th style="width:90px;">Status</th>
+                  <th style="width:100px;">Action</th>
                 </tr>
               </thead>
               <tbody id="tbody-notifications"></tbody>
