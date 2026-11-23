@@ -463,7 +463,14 @@ def preview_dataset_import(db: Session, content: bytes, filename: str, dataset_t
 
     elif dt == "syllabus":
         existing = db.query(Subject).all()
-        by_code_dept = {(s.course_code.strip().upper(), s.department.strip().upper(), (s.scheme or "").strip(), s.semester.strip().upper()): s for s in existing if s.course_code}
+        by_exact = {
+            (s.course_code.strip().upper(), s.department.strip().upper(), (s.scheme or "").strip(), s.semester.strip().upper(), s.title.strip().lower()): s
+            for s in existing if s.course_code and s.title
+        }
+        by_code_dept = {
+            (s.course_code.strip().upper(), s.department.strip().upper(), (s.scheme or "").strip(), s.semester.strip().upper()): s
+            for s in existing if s.course_code and "XY" not in s.course_code.upper() and "ELECTIVE" not in s.course_code.upper()
+        }
         by_title_dept = {(s.title.strip().lower(), s.department.strip().upper(), (s.scheme or "").strip(), s.semester.strip().upper()): s for s in existing if s.title}
 
         for idx, row in df.iterrows():
@@ -520,7 +527,10 @@ def preview_dataset_import(db: Session, content: bytes, filename: str, dataset_t
                 ay = m.group(1) if m else "2023-24"
 
             matched_s = None
-            if code and (code, dept.upper(), scheme, sem.upper()) in by_code_dept:
+            exact_key = (code, dept.upper(), scheme, sem.upper(), title.strip().lower())
+            if exact_key in by_exact:
+                matched_s = by_exact[exact_key]
+            elif code and (code, dept.upper(), scheme, sem.upper()) in by_code_dept:
                 matched_s = by_code_dept[(code, dept.upper(), scheme, sem.upper())]
             elif (title.lower(), dept.upper(), scheme, sem.upper()) in by_title_dept:
                 matched_s = by_title_dept[(title.lower(), dept.upper(), scheme, sem.upper())]

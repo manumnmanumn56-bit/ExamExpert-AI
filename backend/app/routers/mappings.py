@@ -137,7 +137,7 @@ def generate_mapping_suggestions(
                     ))
                     generated_count += 1
 
-        # 2. SPECIALIZATION & RELATED: from expertise_tags & expertise_text
+        # 2. SPECIALIZATION: from expertise_tags & expertise_text
         all_tags = [t.tag.strip() for t in f.expertise_tags if t.tag and len(t.tag.strip()) >= 3]
         if f.expertise_text:
             text_tags = [p.strip() for p in re.split(r"[,;]+", f.expertise_text) if len(p.strip()) >= 3]
@@ -174,43 +174,145 @@ def generate_mapping_suggestions(
                         is_confirmed=False
                     ))
                     generated_count += 1
-                else:
-                    # Check RELATED domain topic overlap
-                    for kw_set, domain_label in related_domains:
-                        tag_in_domain = any(k in tag_low for k in kw_set)
-                        subj_in_domain = any(k in stitle_low for k in kw_set)
-                        if tag_in_domain and subj_in_domain:
-                            key = (f.id, s.id, "RELATED")
-                            if key in existing_keys:
-                                duplicates_skipped += 1
-                                break
-
-                            existing_keys.add(key)
-                            db.add(FacultySubjectMapping(
-                                faculty_id=f.id,
-                                subject_id=s.id,
-                                mapping_type="RELATED",
-                                times_handled=0,
-                                status="SUGGESTED",
-                                suggestion_reason=f"Subject '{s.title}' and faculty expertise '{orig_tag}' share common curriculum domain '{domain_label}'.",
-                                is_confirmed=False
-                            ))
-                            generated_count += 1
-                            break
 
     db.add(AuditLog(
         action="MAPPINGS_SUGGESTIONS_GENERATED",
         entity_type="FacultySubjectMapping",
         entity_id=None,
-        details=f"Admin '{current_user.username}' ran automated suggestion generator: {generated_count} suggestions created, {duplicates_skipped} duplicates skipped."
+        details=f"Admin '{current_user.username}' ran automated tiered suggestion generator: {generated_count} suggestions created (EXACT_EXPERIENCE & SPECIALIZATION), {duplicates_skipped} duplicates skipped."
     ))
     db.commit()
 
     return {
         "success": True,
-        "message": f"Successfully generated {generated_count} mapping suggestions. All suggestions placed in SUGGESTED status awaiting Admin confirmation.",
+        "message": f"Successfully generated {generated_count} mapping suggestions (EXACT_EXPERIENCE & SPECIALIZATION). All suggestions placed in SUGGESTED status awaiting Admin confirmation.",
         "generated_count": generated_count,
         "duplicates_skipped": duplicates_skipped
+    }
+
+
+@router.post("/generate-related/{subject_id}")
+def generate_related_mappings_for_subject(
+    subject_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin"]))
+):
+    """
+    On-demand generation of RELATED expertise mappings for a specific subject.
+    Identifies faculty whose specialization keywords overlap with the subject curriculum domain.
+    Admin only.
+    """
+    subject = db.query(Subject).filter(Subject.id == subject_id).first()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found in syllabus master.")
+
+    related_domains = [
+        ({"python", "programming", "c", "c++", "java"}, "Programming Fundamentals"),
+        ({"machine learning", "ml", "artificial intelligence", "ai", "deep learning", "neural"}, "AI & Machine Learning"),
+        ({"network", "networking", "security", "cryptography", "cyber", "firewall"}, "Networks & Cybersecurity"),
+        ({"database", "dbms", "sql", "nosql", "data warehousing", "mining"}, "Data & Database Systems"),
+        ({"cloud", "aws", "azure", "devops", "distributed", "virtualization"}, "Cloud & Infrastructure"),
+        ({"web", "html", "javascript", "full stack", "react", "frontend"}, "Web Technologies"),
+        ({"operating system", "os", "linux", "unix", "kernel", "system software"}, "Systems & Operating Environments")
+    ]
+
+    stitle_low = (subject.title or "").strip().lower()
+    existing_keys = set(
+        (m.faculty_id, m.mapping_type)
+        for m in db.query(FacultySubjectMapping.faculty_id, FacultySubjectMapping.mapping_type)
+        .filter(FacultySubjectMapping.subject_id == subject_id)
+        .all()
+    )
+
+    all_fac = db.query(Faculty).all()
+    generated_count = 0
+
+    for f in all_fac:
+        all_tags = [t.tag.strip() for t in f.expertise_tags if t.tag and len(t.tag.strip()) >= 3]
+        if f.expertise_text:
+            text_tags = [p.strip() for p in re.split(r"[,;]+", f.expertise_text) if len(p.strip()) >= 3]
+            all_tags.extend(text_tags)
+
+        seen_tags = set()
+        for orig_tag in all_tags:
+            tag_low = orig_tag.lower()
+            if tag_low in seen_tags:
+                continue
+            seen_tags.add(tag_low)
+
+            for kw_set, domain_label in related_domains:
+                tag_in_domain = any(k in tag_low for k in kw_set)
+                subj_in_domain = any(k in stitle_low for k in kw_set)
+                if tag_in_domain and subj_in_domain:
+                    key = (f.id, "RELATED")
+                    if key in existing_keys:
+                        break
+                    existing_keys.add(key)
+                    db.add(FacultySubjectMapping(
+                        faculty_id=f.id,
+                        subject_id=subject.id,
+                        mapping_type="RELATED",
+                        times_handled=0,
+                        status="SUGGESTED",
+                        suggestion_reason=f"Subject '{subject.title}' and faculty expertise '{orig_tag}' share common curriculum domain '{domain_label}'.",
+                        is_confirmed=False
+                    ))
+                    generated_count += 1
+                    break
+
+    db.add(AuditLog(
+        action="RELATED_MAPPINGS_GENERATED",
+        entity_type="Subject",
+        entity_id=subject.id,
+        details=f"Admin '{current_user.username}' generated {generated_count} on-demand RELATED mappings for '{subject.title}' (ID {subject.id})."
+    ))
+    db.commit()
+
+    return {
+        "success": True,
+        "subject_id": subject.id,
+        "subject_title": subject.title,
+        "generated_count": generated_count
+    }
+
+
+@router.post("/purge-untouched-related")
+def purge_untouched_related_mappings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin"]))
+):
+    """
+    Deletes untouched SUGGESTED RELATED mappings that have never been confirmed or reviewed.
+    Retains all EXACT_EXPERIENCE, SPECIALIZATION, and any CONFIRMED/REJECTED mappings.
+    Admin only. Records an institutional AuditLog entry.
+    """
+    untouched_query = db.query(FacultySubjectMapping).filter(
+        FacultySubjectMapping.mapping_type == "RELATED",
+        FacultySubjectMapping.status == "SUGGESTED",
+        FacultySubjectMapping.is_confirmed == False,
+        FacultySubjectMapping.confirmed_at.is_(None)
+    )
+    deleted_count = untouched_query.count()
+    untouched_query.delete(synchronize_session=False)
+
+    exact_count = db.query(FacultySubjectMapping).filter(FacultySubjectMapping.mapping_type == "EXACT_EXPERIENCE").count()
+    spec_count = db.query(FacultySubjectMapping).filter(FacultySubjectMapping.mapping_type == "SPECIALIZATION").count()
+    related_remaining = db.query(FacultySubjectMapping).filter(FacultySubjectMapping.mapping_type == "RELATED").count()
+
+    db.add(AuditLog(
+        action="MAPPING_BULK_CLEANUP",
+        entity_type="FacultySubjectMapping",
+        entity_id=None,
+        details=f"Admin '{current_user.username}' purged {deleted_count} untouched SUGGESTED RELATED mappings. Retained: {exact_count} EXACT_EXPERIENCE, {spec_count} SPECIALIZATION, {related_remaining} reviewed RELATED rows."
+    ))
+    db.commit()
+
+    return {
+        "success": True,
+        "deleted_count": deleted_count,
+        "exact_remaining": exact_count,
+        "specialization_remaining": spec_count,
+        "related_remaining": related_remaining
     }
 
 

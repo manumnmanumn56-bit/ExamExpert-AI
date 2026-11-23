@@ -15,7 +15,7 @@ Enforces:
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import distinct, or_
+from sqlalchemy import distinct, or_, func
 
 from ..database import get_db
 from ..models import Subject, EligibilityRules, AuditLog, User
@@ -112,8 +112,21 @@ def _validate_mca_semester(dept: str, sem: str):
             )
 
 
-def _check_duplicate_subject(db: Session, course_code: str, department: str, scheme: str, semester: str, exclude_id: int | None = None):
-    """Enforces uniqueness constraint on (course_code, department, scheme, semester)."""
+def _check_duplicate_subject(
+    db: Session,
+    course_code: str,
+    department: str,
+    scheme: str,
+    semester: str,
+    title: str | None = None,
+    exclude_id: int | None = None
+):
+    """
+    Enforces uniqueness constraint on syllabus subjects.
+    For standard courses, (course_code, department, scheme, semester) must be unique.
+    For shared elective/specialization group codes (e.g. 25MCAE3XY or containing 'XY'/'ELECTIVE'),
+    courses are differentiated by title. If the title is also identical, it is rejected as a duplicate.
+    """
     query = db.query(Subject).filter(
         Subject.course_code == course_code,
         Subject.department == department,
@@ -122,7 +135,16 @@ def _check_duplicate_subject(db: Session, course_code: str, department: str, sch
     )
     if exclude_id is not None:
         query = query.filter(Subject.id != exclude_id)
-    existing = query.first()
+
+    if title:
+        t_clean = title.strip().lower()
+        if "XY" in course_code.upper() or "ELECTIVE" in course_code.upper():
+            existing = query.filter(func.lower(Subject.title) == t_clean).first()
+        else:
+            existing = query.first()
+    else:
+        existing = query.first()
+
     if existing:
         raise HTTPException(
             status_code=400,
@@ -439,7 +461,7 @@ def add_subject(
     _validate_mca_semester(dept, sem)
 
     # 2. Duplicate course check
-    _check_duplicate_subject(db, code, dept, scheme, sem)
+    _check_duplicate_subject(db, code, dept, scheme, sem, title=req.title.strip() if req.title else None)
 
     new_subj = Subject(
         course_code=code,
@@ -500,7 +522,8 @@ def edit_subject(
     _validate_mca_semester(target_dept, target_sem)
 
     # 2. Duplicate course check across other records
-    _check_duplicate_subject(db, target_code, target_dept, target_scheme, target_sem, exclude_id=subj.id)
+    target_title = req.title.strip() if req.title else subj.title
+    _check_duplicate_subject(db, target_code, target_dept, target_scheme, target_sem, title=target_title, exclude_id=subj.id)
 
     changes = []
     if req.course_code and req.course_code.strip().upper() != subj.course_code:

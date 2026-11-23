@@ -26,6 +26,26 @@
 | **Module 13 (Slice A)** | In-App & Email Notifications | **DONE** | `tests/test_module13_notifications.py` | In-app alerts (submitted, approved, rejected, assigned), personal inbox, unread counts, SMTP fallback. |
 | **Module 14 (Slice B)** | Real Data Reports & Analytics | **DONE** | `tests/test_module14_reports.py` | Multi-dimensional real data reports, RBAC scoping, Excel/PDF/print exports, formula injection safety. |
 | **Module 15 (Slice C)** | Acceptance Testing & Security Review | **DONE** | `tests/test_module15_acceptance.py` | Admin test execution runner on temp isolated DB, path-traversal defense, 3-min ceiling, SECURITY_AUDIT.md. |
+| **Slice D (Cleanup)** | Data Integrity & Governance Cleanup | **DONE** | `tests/test_sliceD_cleanup.py` | Nagamani S workbook email match, syllabus title key (0 conflict dry-run), tiered mappings & untouched RELATED purge. |
+
+---
+
+## Slice D (Cleanup Fixes) Architecture Highlights
+
+- **Item A: Faculty Record Email & User Linking**:
+  - `Faculty` record email for Dr. Nagamani S matches the source workbook (`nagamanis@sjbit.edu.in`).
+  - User account `faculty_mca` (`faculty.mca@sjbit.edu.in`) is linked directly via `User.faculty_id == Faculty.id` (ID 45).
+  - Faculty login remains fully functional with credentials (`Faculty@2026!`).
+- **Item B: Syllabus Key Matching with Title & Unweakened Duplicate Rule**:
+  - Syllabus import matching key includes `title.strip().lower()`.
+  - The three `25MCAE3XY` electives (sharing course code but having distinct titles) import cleanly as 3 separate rows.
+  - Module 5 duplicate rule remains strictly enforced: true duplicates (same code + title for electives, or same code for core) are rejected with HTTP 400.
+  - Verified with fresh dry-runs across all three workbooks: 0 conflicts, 0 to-add, 0 rejected.
+- **Item C: Tiered Mapping Generation & Untouched RELATED Deletion**:
+  - Batch mapping generator produces strictly `EXACT_EXPERIENCE` and `SPECIALIZATION` mappings (0 `RELATED` in batch).
+  - Added on-demand endpoint `POST /api/mappings/generate-related/{subject_id}` (Admin only).
+  - Purged 7,898 untouched `SUGGESTED` `RELATED` rows from `examexpert.db`, retaining 190 `EXACT_EXPERIENCE` and 253 `SPECIALIZATION` rows.
+  - Institutional `AuditLog` entry created (`MAPPING_BULK_CLEANUP`).
 
 ---
 
