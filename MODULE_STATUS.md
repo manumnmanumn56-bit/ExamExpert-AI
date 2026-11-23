@@ -24,6 +24,25 @@
 | **Module 11 (Slice 3)** | Allocation Request & Recommendation UI | **DONE** | `tests/test_module11_allocation.py` | Mode splits (50:50, Internal/External only), MCA 4-sem rule, RESERVED ledger entries. |
 | **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **DONE** | `tests/test_module12_hod_approval.py` | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
 | **Module 13 (Slice A)** | In-App & Email Notifications | **DONE** | `tests/test_module13_notifications.py` | In-app alerts (submitted, approved, rejected, assigned), personal inbox, unread counts, SMTP fallback. |
+| **Module 14 (Slice B)** | Real Data Reports & Analytics | **DONE** | `tests/test_module14_reports.py` | Multi-dimensional real data reports, RBAC scoping, Excel/PDF/print exports, formula injection safety. |
+
+---
+
+## Slice B (Module 14) Architecture Highlights
+
+- **Multi-Dimensional Live Reporting**:
+  - Live summaries matching live database record counts bit-for-bit (zero mock data).
+  - Faculty workload reports reflecting committed and reserved ledger entries.
+  - Department and subject-wise allocation distributions and status archives.
+- **Server-Enforced Role Scoping**:
+  - Admin: Full institutional access to internal/external faculty rosters, import batches, and institution distribution.
+  - HOD: Scoped strictly to own department internal faculty and allocations (external reports return HTTP 403).
+  - Faculty: Restricted strictly to own personal profile and assigned allocations (HTTP 403 for others).
+- **Formula Injection Neutralization (OWASP)**:
+  - Cells starting with `=`, `+`, `-`, `@`, `\t`, `\r` are neutralized with single quote prefixing.
+  - Missing data rendered as 'Not provided' (no fake data).
+- **Multi-Format Export**:
+  - Openpyxl Excel (.xlsx), FPDF executive report (.pdf), and browser-ready `@media print` HTML views.
 
 ---
 
