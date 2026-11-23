@@ -29,11 +29,12 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    db = SessionLocal()
+    bind = db.get_bind()
     # 1. Initialize Tables
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=bind)
 
     # 2. Check and seed initial datasets if empty
-    db = SessionLocal()
     try:
         run_database_migrations(db)
         seed_eligibility_rules(db)

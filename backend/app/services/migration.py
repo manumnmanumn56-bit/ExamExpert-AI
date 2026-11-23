@@ -36,11 +36,12 @@ DEFAULT_EXTERNAL_INSTITUTIONS = [
 
 def run_database_migrations(db: Session):
     """Safely upgrades SQLite schema, creates new tables, and adds missing columns."""
+    bind = db.get_bind()
     # 1. Create any non-existing tables
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=bind)
 
     # 2. Check and add missing columns to existing tables
-    with engine.connect() as conn:
+    with bind.connect() as conn:
         # Users table checks
         user_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
         if "is_activated" not in user_cols:
