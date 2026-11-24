@@ -93,11 +93,11 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser to acces
 
 ## 👥 Default Accounts
 
-| Role | Username | Email | Default Password |
+| Role | Username | Email | Credentials |
 | :--- | :--- | :--- | :--- |
-| **Admin** | `coe_admin` | `admin@sjbit.edu.in` | `Admin@SJBIT2026!` |
-| **HOD** | `hod_mca` | `hod.mca@sjbit.edu.in` | `Hod@2026!` |
-| **Faculty** | `faculty_mca` | `faculty.mca@sjbit.edu.in` | `Faculty@2026!` |
+| **Admin** | `coe_admin` | `admin@sjbit.edu.in` | *(see your .env)* |
+| **HOD** | `hod_mca` | `hod.mca@sjbit.edu.in` | *(see your .env)* |
+| **Faculty** | `faculty_mca` | `faculty.mca@sjbit.edu.in` | *(see your .env)* |
 
 ---
 

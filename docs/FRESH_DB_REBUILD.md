@@ -49,7 +49,7 @@ uvicorn backend.app.main:app --port 8000
    - Username: `coe_admin`
    - Email: `admin@sjbit.edu.in`
    - Role: `Admin`
-   - Password: `Admin@SJBIT2026!`
+   - Password: *(see your .env)*
 5. **Worksheet Ingestion & Sanitization**:
    - Ingests internal faculty -> 47 records
    - Ingests external faculty -> 77 records

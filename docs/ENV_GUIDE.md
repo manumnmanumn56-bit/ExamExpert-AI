@@ -21,9 +21,9 @@ This document details the configuration parameters, cryptographic keys, and cred
 | `ALGORITHM` | `HS256` | Cryptographic signature algorithm for JWT tokens. |
 | `SESSION_EXPIRY_HOURS` | `12` | Inactivity/session lifespan before requiring re-authentication. |
 | `OTP_POLICY` | `ALL_ROLES` | One-Time Password verification policy: `ALL_ROLES`, `EXTERNAL_ONLY`, or `DISABLED`. |
-| `ADMIN_PASSWORD` | `Admin@SJBIT2026!` | Initial password seeded for the root COE Admin account upon fresh initialization. |
-| `HOD_MCA_PASSWORD` | `Hod@2026!` | Initial password seeded for the MCA HOD account upon fresh initialization. |
-| `FACULTY_PASSWORD` | `Faculty@2026!` | Initial password seeded for internal faculty accounts upon fresh initialization. |
+| `ADMIN_PASSWORD` | *(Configured by administrator)* | Initial password seeded for the root COE Admin account upon fresh initialization (see your .env). |
+| `HOD_MCA_PASSWORD` | *(Configured by administrator)* | Initial password seeded for the MCA HOD account upon fresh initialization (see your .env). |
+| `FACULTY_PASSWORD` | *(Configured by administrator)* | Initial password seeded for internal faculty accounts upon fresh initialization (see your .env). |
 | `SMTP_HOST` | `smtp.office365.com` *(Optional)* | Outgoing SMTP mail server hostname for notification emails. |
 | `SMTP_PORT` | `587` | Outgoing SMTP server TLS port (typically 587 or 465). |
 | `SMTP_USER` | `coe.examination@sjbit.edu.in` | Official COE outgoing mailbox username. |

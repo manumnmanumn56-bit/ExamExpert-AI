@@ -28,7 +28,7 @@ This document provides comprehensive operational walkthroughs for all three prim
 ### 2.1 Logging In
 1. Navigate to `http://localhost:8000/`.
 2. Select the **Admin** portal tab.
-3. Enter registered email (`admin@sjbit.edu.in`) and password (`Admin@SJBIT2026!`).
+3. Enter registered email (`admin@sjbit.edu.in`) and password (*see your .env*).
 4. Click **Sign In to Examination Portal**.
 
 ### 2.2 Initiating a Question-Paper Faculty Allocation
@@ -83,35 +83,34 @@ This document provides comprehensive operational walkthroughs for all three prim
 ### 3.1 Logging In
 1. Navigate to `http://localhost:8000/`.
 2. Select the **HOD** portal tab.
-3. Enter registered departmental credentials (e.g., `hod.mca@sjbit.edu.in` / `Hod@2026!`).
+3. Enter registered departmental credentials (e.g., `hod.mca@sjbit.edu.in`, password: *see your .env*).
 
-### 3.2 Reviewing Departmental Allocation Requests
-1. Navigate to the **⏳ Pending Approvals** tab.
+### 3.2 HOD Department Dashboard
+1. Upon login, the **🏛️ HOD Dashboard** serves as your dedicated home tab:
+   - Department internal faculty count and roster.
+   - Live workload metrics from the immutable ledger (committed, reserved, active).
+   - Counts of Pending, Approved, and Rejected allocation orders.
+   - Quick export buttons for Department Allocations Excel and Department Workload PDF.
+
+### 3.3 Reviewing Departmental Allocation Requests
+1. Navigate to the **⏳ Pending Approvals** tab (or click the quick link from the HOD Dashboard).
 2. All allocation requests submitted by the COE Office for your department are listed with:
-   - Subject code and course title.
-   - Curricular scheme and semester.
+   - Subject code, title, and "How allocation works" 9-level ranking explanation reference.
    - Recommended internal and external faculty setters.
-   - Matching provenance reasons and current workload levels.
+   - Candidate ranking tier, active workload standing, and manual exception reasons (if applicable).
 
-### 3.3 Approving an Allocation Request
+### 3.4 Approving an Allocation Request
 1. Review candidate appointments.
 2. If satisfied, click **✓ Approve Allocation**.
 3. Confirm approval in the prompt.
 4. The system automatically:
-   - Updates allocation status to `Confirmed`.
-   - Converts `RESERVED` workload ledger entries to `COMMITTED`.
-   - Sends notification alerts to the COE Admin and appointed faculty.
-
-### 3.4 Replacing a Recommended Setter
-1. If an appointed faculty member is unavailable or has a conflict:
-   - Click **Replace Setter** on the candidate's card.
-   - Select an alternative eligible candidate from the dropdown list.
-   - Provide documented justification for the replacement.
-   - Click **Confirm Replacement**.
-   - The original candidate's workload reserve is released and transferred to the replacement.
+   - Updates allocation status to `Approved`.
+   - Converts `RESERVED` workload ledger entries to `COMMITTED` in one atomic transaction.
+   - Releases the official PDF appointment order for download.
+   - Sends in-app and email notifications to appointed faculty members.
 
 ### 3.5 Rejecting an Allocation Request
-1. If the entire recommendation requires revision:
+1. If the recommendation requires revision:
    - Click **✕ Reject Allocation**.
    - Enter a **mandatory detailed rejection reason** (rejections without documented reasons are strictly rejected by the server).
    - Click **Submit Rejection**.
@@ -124,21 +123,22 @@ This document provides comprehensive operational walkthroughs for all three prim
 ### 4.1 Logging In
 1. Navigate to `http://localhost:8000/`.
 2. Select the **Faculty** portal tab.
-3. Enter registered email (e.g., `faculty.mca@sjbit.edu.in`) and password (`Faculty@2026!`).
+3. Enter registered email (e.g., `faculty.mca@sjbit.edu.in`) and password (*see your .env*).
 
-### 4.2 Viewing Question-Paper Setting Appointments
+### 4.2 Faculty Portal & Dedicated Dashboard
+1. Upon logging in, the **👤 Faculty Portal** serves as your dedicated home tab:
+   - **Academic Profile**: Verified name, email, department, designation, qualification, and accredited teaching experience (read-only).
+   - **Workload Ledger Standing**: Live committed papers, reserved papers, total active count, and remaining capacity based on institutional policy limits.
+   - **Confirmed Subject Expertise**: List of verified courses mapped to your profile with handling counts.
+   - **My Assigned Question Papers**: List of all question paper setter nominations with status (Pending vs Approved) and direct PDF download link once approved by HOD.
+   - **Export Report**: Download personal faculty workload summary spreadsheet.
+
+### 4.3 Viewing Notifications
 1. Navigate to the **📬 Notifications** tab.
-2. Review real-time alerts regarding official nominations (`FACULTY_ASSIGNED`).
-3. Click on a notification to mark it as read and view appointment details.
+2. Review real-time alerts regarding official nominations (`FACULTY_ASSIGNED`) and approvals.
+3. Click on a notification to mark it as read.
 
-### 4.3 Downloading Official Appointment Orders
-1. Navigate to the **📜 Order Archive** tab.
-2. View your active question-paper setting orders.
-3. Click **📄 Download PDF Order** to download the official appointment document bearing the COE digital reference number and examination parameters.
-
-### 4.4 Profile & Workload Inspection
-1. Navigate to the **👨‍🏫 Faculty** tab.
-2. Review your personal profile:
-   - Official institutional designation and department.
-   - Registered total experience and verified courses taught.
-   - Current active examination workload (committed papers for the active academic cycle).
+### 4.4 Downloading Official Appointment Orders
+1. In the **👤 Faculty Portal** or **📜 Order Archive** tab:
+2. Pending allocations display "Awaiting HOD approval" (PDF downloads are strictly blocked until approval).
+3. Once approved by the HOD, click **📄 Download PDF Order** to download the official appointment document bearing the COE digital reference number and statutory examination parameters.
