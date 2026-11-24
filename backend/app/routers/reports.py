@@ -31,7 +31,11 @@ from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Allocation, AllocationSetter, Faculty, NotificationLog, AuditLog, User
+from ..models import (
+    Allocation, AllocationSetter, Faculty, NotificationLog, AuditLog, User,
+    FacultySubjectMapping, InAppNotification, EligibilityRules
+)
+from ..services.eligibility import get_faculty_workload, get_confirmed_policy
 from ..services.pdf_generator import generate_allocation_pdf
 from ..services.migration import resolve_department_names
 from ..services.importer import export_faculty_to_excel, export_allocations_to_excel
@@ -445,4 +449,262 @@ def get_audit_logs(
             "details": l.details,
             "performed_at": l.performed_at.isoformat() if l.performed_at else ""
         } for l in logs]
+    }
+
+
+# ─── Module 14 / Slice 2: Dedicated Role Dashboards ───────────────────────────
+
+@router.get("/hod-dashboard")
+def get_hod_dashboard_data(
+    academic_year: Optional[str] = Query("2025-26"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["HOD"]))
+):
+    """
+    HOD Dashboard (Default landing for HOD):
+    Strictly scoped to HOD's own department:
+    - Internal faculty count
+    - Faculty table: name, designation, experience, confirmed-expertise count, committed & reserved workload
+    - Request counts: Pending HOD Approval, Approved, Rejected
+    - Recent pending requests with quick links
+    """
+    dept_raw = current_user.department or ""
+    dept_variants = resolve_department_names(db, dept_raw)
+    if not dept_variants:
+        dept_variants = [dept_raw]
+
+    # Department faculty list
+    fac_list = db.query(Faculty).filter(
+        Faculty.department.in_(dept_variants),
+        Faculty.faculty_type == "internal"
+    ).order_by(Faculty.name).all()
+
+    faculty_rows = []
+    for f in fac_list:
+        wl = get_faculty_workload(db, f.id, academic_year)
+        conf_exp_count = db.query(FacultySubjectMapping).filter(
+            FacultySubjectMapping.faculty_id == f.id,
+            FacultySubjectMapping.is_confirmed == True
+        ).count()
+        faculty_rows.append({
+            "faculty_id": f.id,
+            "name": f.name,
+            "designation": f.designation or "Not provided",
+            "experience_years": f.experience_years if f.experience_years is not None else "Not provided",
+            "confirmed_expertise_count": conf_exp_count,
+            "workload_committed": wl["committed"],
+            "workload_reserved": wl["reserved"],
+            "workload_active": wl["total_active"],
+            "eligibility_status": f.eligibility_status or "Not Qualified"
+        })
+
+    # Allocation counts scoped to HOD department
+    alloc_base = db.query(Allocation).filter(Allocation.department.in_(dept_variants))
+    count_pending = alloc_base.filter(Allocation.status == "Pending HOD Approval").count()
+    count_approved = alloc_base.filter(Allocation.status.in_(["Approved", "Confirmed"])).count()
+    count_rejected = alloc_base.filter(Allocation.status == "Rejected").count()
+
+    recent_pending = alloc_base.filter(Allocation.status == "Pending HOD Approval").order_by(Allocation.created_at.desc()).limit(5).all()
+
+    return {
+        "department": dept_raw,
+        "academic_year": academic_year,
+        "faculty_count": len(fac_list),
+        "counts": {
+            "pending": count_pending,
+            "approved": count_approved,
+            "rejected": count_rejected
+        },
+        "faculty": faculty_rows,
+        "recent_pending": [{
+            "id": a.id,
+            "reference_number": a.reference_number,
+            "subject_title": a.subject.title if a.subject else "Not provided",
+            "course_code": a.subject.course_code if a.subject else "Not provided",
+            "created_at": a.created_at.isoformat() if a.created_at else ""
+        } for a in recent_pending]
+    }
+
+
+@router.get("/faculty-dashboard")
+def get_faculty_dashboard_data(
+    academic_year: Optional[str] = Query("2025-26"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Faculty"]))
+):
+    """
+    Faculty Dashboard (Default landing for Faculty):
+    Resolved from caller session:
+    - Profile: qualification, designation, experience, department, institution
+    - Confirmed expertise subjects
+    - Workload: committed, reserved, active, policy capacity
+    - Assigned papers with status
+    - Unread notification count
+    """
+    fac = None
+    if current_user.faculty_id:
+        fac = db.query(Faculty).filter_by(id=current_user.faculty_id).first()
+    if not fac and current_user.email:
+        fac = db.query(Faculty).filter_by(email=current_user.email).first()
+
+    if not fac:
+        raise HTTPException(status_code=404, detail="Faculty profile not linked to user account.")
+
+    # Workload
+    wl = get_faculty_workload(db, fac.id, academic_year)
+    rules = db.query(EligibilityRules).first()
+    cap = int(rules.internal_capacity if fac.faculty_type == "internal" else rules.external_capacity) if rules else 2
+
+    # Confirmed expertise subjects
+    mappings = db.query(FacultySubjectMapping).filter(
+        FacultySubjectMapping.faculty_id == fac.id,
+        FacultySubjectMapping.is_confirmed == True
+    ).all()
+    confirmed_subjects = []
+    for m in mappings:
+        if m.subject:
+            confirmed_subjects.append({
+                "subject_id": m.subject.id,
+                "course_code": m.subject.course_code or "Not provided",
+                "title": m.subject.title or "Not provided",
+                "mapping_type": m.mapping_type or "SPECIALIZATION",
+                "times_handled": m.times_handled or 0
+            })
+
+    # Assigned papers / nominations
+    setters = db.query(AllocationSetter).join(Allocation).filter(
+        AllocationSetter.faculty_id == fac.id
+    ).order_by(Allocation.created_at.desc()).all()
+
+    assigned_papers = []
+    for s in setters:
+        alloc = s.allocation
+        subj = alloc.subject if alloc else None
+        assigned_papers.append({
+            "allocation_id": alloc.id if alloc else None,
+            "reference_number": alloc.reference_number if alloc else "Not provided",
+            "course_code": subj.course_code if subj else "Not provided",
+            "subject_title": subj.title if subj else "Not provided",
+            "academic_year": alloc.academic_year if alloc else academic_year,
+            "semester": alloc.semester if alloc else "Not provided",
+            "assigned_order": s.assigned_order,
+            "setter_status": s.status,
+            "allocation_status": alloc.status if alloc else "Not provided",
+            "can_download_pdf": alloc.status in ("Approved", "Confirmed") if alloc else False
+        })
+
+    # Unread notifications
+    unread_count = db.query(InAppNotification).filter(
+        InAppNotification.user_id == current_user.id,
+        InAppNotification.is_read == False
+    ).count()
+
+    return {
+        "faculty_id": fac.id,
+        "name": fac.name,
+        "email": fac.email or "Not provided",
+        "department": fac.department or "Not provided",
+        "institution": fac.institution or "SJBIT",
+        "designation": fac.designation or "Not provided",
+        "qualification": fac.qualification or "Not provided",
+        "experience_years": fac.experience_years if fac.experience_years is not None else "Not provided",
+        "eligibility_status": fac.eligibility_status or "Not provided",
+        "workload": {
+            "committed": wl["committed"],
+            "reserved": wl["reserved"],
+            "total_active": wl["total_active"],
+            "capacity": cap,
+            "remaining": max(0, cap - wl["total_active"])
+        },
+        "confirmed_subjects": confirmed_subjects,
+        "assigned_papers": assigned_papers,
+        "unread_notifications": unread_count
+    }
+
+
+@router.get("/admin-workload-distribution")
+def get_admin_workload_distribution(
+    academic_year: Optional[str] = Query("2025-26"),
+    department: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin"]))
+):
+    """
+    Admin Workload Distribution View:
+    Breakdown by department: committed, reserved, remaining capacity, internal vs external.
+    Includes data points for the frontend bar chart and consolidated summary.
+    """
+    query = db.query(Faculty)
+    if department:
+        dept_variants = resolve_department_names(db, department)
+        if dept_variants:
+            query = query.filter(Faculty.department.in_(dept_variants))
+        else:
+            query = query.filter(Faculty.department == department)
+
+    all_fac = query.all()
+    rules = db.query(EligibilityRules).first()
+    int_cap = int(rules.internal_capacity) if rules else 2
+    ext_cap = int(rules.external_capacity) if rules else 2
+
+    # Group by department and faculty_type
+    departments = {}
+    summary = {
+        "total_internal": 0,
+        "total_external": 0,
+        "total_committed": 0,
+        "total_reserved": 0,
+        "total_capacity": 0,
+        "total_remaining": 0
+    }
+
+    for f in all_fac:
+        dept = f.department or "External / Other"
+        if dept not in departments:
+            departments[dept] = {
+                "department": dept,
+                "internal_count": 0,
+                "external_count": 0,
+                "committed": 0,
+                "reserved": 0,
+                "total_active": 0,
+                "capacity": 0,
+                "remaining": 0
+            }
+
+        wl = get_faculty_workload(db, f.id, academic_year)
+        cap = int_cap if f.faculty_type == "internal" else ext_cap
+        rem = max(0, cap - wl["total_active"])
+
+        if f.faculty_type == "internal":
+            departments[dept]["internal_count"] += 1
+            summary["total_internal"] += 1
+        else:
+            departments[dept]["external_count"] += 1
+            summary["total_external"] += 1
+
+        departments[dept]["committed"] += wl["committed"]
+        departments[dept]["reserved"] += wl["reserved"]
+        departments[dept]["total_active"] += wl["total_active"]
+        departments[dept]["capacity"] += cap
+        departments[dept]["remaining"] += rem
+
+        summary["total_committed"] += wl["committed"]
+        summary["total_reserved"] += wl["reserved"]
+        summary["total_capacity"] += cap
+        summary["total_remaining"] += rem
+
+    chart_data = {
+        "labels": list(departments.keys()),
+        "committed": [d["committed"] for d in departments.values()],
+        "reserved": [d["reserved"] for d in departments.values()],
+        "remaining": [d["remaining"] for d in departments.values()]
+    }
+
+    return {
+        "academic_year": academic_year,
+        "filter_department": department,
+        "summary": summary,
+        "departments": list(departments.values()),
+        "chart_data": chart_data
     }

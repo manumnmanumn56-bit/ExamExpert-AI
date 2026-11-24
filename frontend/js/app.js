@@ -284,8 +284,20 @@ function showAppView() {
 
   // Module 12: HOD & Admin Pending Approvals tab visibility
   const isHodOrAdmin = state.currentUser && (state.currentUser.role === "HOD" || state.currentUser.role === "Admin");
+  const isHod = state.currentUser && state.currentUser.role === "HOD";
+  const isFaculty = state.currentUser && state.currentUser.role === "Faculty";
   const navPending = document.getElementById("nav-pending-approvals");
   if (navPending) navPending.style.display = isHodOrAdmin ? "inline-flex" : "none";
+
+  // Slice 2: Dedicated Dashboard Nav Pills
+  const navHodDash = document.getElementById("nav-hod-dashboard");
+  if (navHodDash) navHodDash.style.display = isHod ? "inline-flex" : "none";
+
+  const navFacDash = document.getElementById("nav-faculty-dashboard");
+  if (navFacDash) navFacDash.style.display = isFaculty ? "inline-flex" : "none";
+
+  const navWorkloadDist = document.getElementById("nav-workload-dist");
+  if (navWorkloadDist) navWorkloadDist.style.display = isAdmin ? "inline-flex" : "none";
 
   const pendingSub = document.getElementById("pending-approvals-subtitle");
   if (pendingSub && state.currentUser) {
@@ -298,6 +310,15 @@ function showAppView() {
 
   initializeDashboard();
   loadUnreadNotificationCount();
+
+  // Set default view depending on role
+  if (isHod) {
+    switchTab("hod-dashboard");
+  } else if (isFaculty) {
+    switchTab("faculty-dashboard");
+  } else {
+    switchTab("dashboard");
+  }
 }
 
 async function verifyExistingSession() {
@@ -689,6 +710,9 @@ function switchTab(tabId) {
   if (pane) pane.style.display = "block";
 
   if (tabId === "dashboard" && state.currentUser && state.currentUser.role === "Admin") loadDashboardStats();
+  if (tabId === "hod-dashboard") loadHodDashboard();
+  if (tabId === "faculty-dashboard") loadFacultyDashboard();
+  if (tabId === "workload-dist") loadAdminWorkloadDistribution();
   if (tabId === "faculty") loadFacultyTab();
   if (tabId === "subjects") loadSubjectMasterList();
   if (tabId === "mappings") loadMappingsList();
@@ -4184,5 +4208,196 @@ function viewSuiteLog(suiteId) {
   pre.textContent = targetSuite.lastOutput.trim() || "(No console output produced)";
   card.style.display = "block";
   card.scrollIntoView({ behavior: "smooth" });
+}
+
+
+// =============================================================================
+// SLICE 2: ROLE DASHBOARDS CONTROLLER FUNCTIONS
+// =============================================================================
+
+async function loadHodDashboard() {
+  if (!state.token) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/reports/hod-dashboard`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      showToast("Access Denied", "Could not load HOD dashboard.", "error");
+      return;
+    }
+    const data = await res.json();
+
+    document.getElementById("hod-dashboard-subtitle").textContent =
+      `Department Scope: ${data.department || "Your Department"} • Faculty Capacity & Allocation Requests (${data.academic_year})`;
+
+    document.getElementById("hod-stat-fac-count").textContent = data.faculty_count || 0;
+    document.getElementById("hod-stat-pending").textContent = data.counts?.pending || 0;
+    document.getElementById("hod-stat-approved").textContent = data.counts?.approved || 0;
+    document.getElementById("hod-stat-rejected").textContent = data.counts?.rejected || 0;
+
+    const tbody = document.getElementById("tbody-hod-faculty");
+    if (!tbody) return;
+
+    if (!data.faculty || data.faculty.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">No internal faculty records registered in your department.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = data.faculty.map(f => `
+      <tr>
+        <td><strong>${escapeHtml(f.name)}</strong></td>
+        <td>${escapeHtml(f.designation)}</td>
+        <td>${f.experience_years !== "Not provided" ? f.experience_years + " yrs" : "Not provided"}</td>
+        <td><span class="badge badge-blue">${f.confirmed_expertise_count} confirmed</span></td>
+        <td><span class="badge badge-green">${f.workload_committed}</span></td>
+        <td><span class="badge badge-amber">${f.workload_reserved}</span></td>
+        <td><strong>${f.workload_active}</strong></td>
+        <td><span class="badge ${f.eligibility_status.includes('Qualified') ? 'badge-green' : 'badge-amber'}">${escapeHtml(f.eligibility_status)}</span></td>
+      </tr>
+    `).join("");
+
+  } catch (err) {
+    showToast("Network Error", "Failed to retrieve HOD dashboard data.", "error");
+  }
+}
+
+async function loadFacultyDashboard() {
+  if (!state.token) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/reports/faculty-dashboard`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      showToast("Access Denied", "Could not load Faculty profile portal.", "error");
+      return;
+    }
+    const data = await res.json();
+
+    document.getElementById("fac-profile-name").textContent = data.name || "—";
+    document.getElementById("fac-profile-email").textContent = data.email || "—";
+    document.getElementById("fac-profile-dept").textContent = data.department || "—";
+    document.getElementById("fac-profile-inst").textContent = data.institution || "—";
+    document.getElementById("fac-profile-desig").textContent = data.designation || "—";
+    document.getElementById("fac-profile-qual").textContent = data.qualification || "—";
+    document.getElementById("fac-profile-exp").textContent = data.experience_years !== "Not provided" ? `${data.experience_years} years` : "Not provided";
+
+    const wl = data.workload || {};
+    document.getElementById("fac-stat-committed").textContent = wl.committed || 0;
+    document.getElementById("fac-stat-reserved").textContent = wl.reserved || 0;
+    document.getElementById("fac-stat-active").textContent = wl.total_active || 0;
+    document.getElementById("fac-stat-remaining").textContent = wl.remaining || 0;
+    document.getElementById("fac-stat-cap-text").textContent = `Policy Limit: ${wl.capacity || 2}`;
+
+    // Confirmed Expertise
+    const tbodyExp = document.getElementById("tbody-fac-expertise");
+    if (tbodyExp) {
+      if (!data.confirmed_subjects || data.confirmed_subjects.length === 0) {
+        tbodyExp.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">No confirmed subject expertise mapped yet.</td></tr>`;
+      } else {
+        tbodyExp.innerHTML = data.confirmed_subjects.map(s => `
+          <tr>
+            <td><strong>${escapeHtml(s.course_code)}</strong></td>
+            <td>${escapeHtml(s.title)}</td>
+            <td><span class="badge badge-blue">${escapeHtml(s.mapping_type)}</span></td>
+            <td>${s.times_handled} times</td>
+          </tr>
+        `).join("");
+      }
+    }
+
+    // Assigned Papers
+    const tbodyAssign = document.getElementById("tbody-fac-assignments");
+    if (tbodyAssign) {
+      if (!data.assigned_papers || data.assigned_papers.length === 0) {
+        tbodyAssign.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:16px; color:var(--text-muted);">No question paper setter orders assigned currently.</td></tr>`;
+      } else {
+        tbodyAssign.innerHTML = data.assigned_papers.map(p => `
+          <tr>
+            <td><strong>${escapeHtml(p.reference_number)}</strong></td>
+            <td>${escapeHtml(p.course_code)} - ${escapeHtml(p.subject_title)}</td>
+            <td>Set ${p.assigned_order || 1}</td>
+            <td><span class="badge ${p.allocation_status === 'Approved' ? 'badge-green' : 'badge-amber'}">${escapeHtml(p.allocation_status)}</span></td>
+            <td>
+              ${p.can_download_pdf && p.allocation_id ? `
+                <a href="/api/reports/download-pdf/${p.allocation_id}" target="_blank" class="btn btn-secondary btn-sm" style="padding:4px 8px; font-size:11px;">
+                  📄 PDF Order
+                </a>
+              ` : `<span style="font-size:11px; color:var(--text-muted);">Pending Approval</span>`}
+            </td>
+          </tr>
+        `).join("");
+      }
+    }
+
+  } catch (err) {
+    showToast("Network Error", "Failed to retrieve Faculty dashboard data.", "error");
+  }
+}
+
+async function loadAdminWorkloadDistribution() {
+  if (!state.token) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/reports/admin-workload-distribution`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      showToast("Access Denied", "Could not load workload distribution analytics.", "error");
+      return;
+    }
+    const data = await res.json();
+
+    const sum = data.summary || {};
+    document.getElementById("dist-stat-internal").textContent = sum.total_internal || 0;
+    document.getElementById("dist-stat-external").textContent = sum.total_external || 0;
+    document.getElementById("dist-stat-committed").textContent = sum.total_committed || 0;
+    document.getElementById("dist-stat-reserved").textContent = sum.total_reserved || 0;
+    document.getElementById("dist-stat-remaining").textContent = sum.total_remaining || 0;
+
+    // Render bar chart representation
+    const chartContainer = document.getElementById("workload-chart-container");
+    if (chartContainer && data.departments) {
+      chartContainer.innerHTML = data.departments.map(d => {
+        const total = Math.max(1, d.capacity);
+        const pCommitted = Math.round((d.committed / total) * 100);
+        const pReserved = Math.round((d.reserved / total) * 100);
+        const pRemaining = Math.max(0, 100 - pCommitted - pReserved);
+
+        return `
+          <div style="background:#F8FAFC; border:1px solid var(--border-light); border-radius:6px; padding:12px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px; font-size:13px;">
+              <strong>${escapeHtml(d.department)}</strong>
+              <span style="color:var(--text-muted); font-size:12px;">
+                Committed: <strong>${d.committed}</strong> | Reserved: <strong>${d.reserved}</strong> | Remaining: <strong>${d.remaining}</strong> (Cap: ${d.capacity})
+              </span>
+            </div>
+            <div style="height:14px; display:flex; border-radius:4px; overflow:hidden; background:#E2E8F0;">
+              <div style="width:${pCommitted}%; background:#10B981;" title="Committed: ${d.committed}"></div>
+              <div style="width:${pReserved}%; background:#F59E0B;" title="Reserved: ${d.reserved}"></div>
+              <div style="width:${pRemaining}%; background:#3B82F6;" title="Remaining Capacity: ${d.remaining}"></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    // Render table
+    const tbody = document.getElementById("tbody-dist-breakdown");
+    if (tbody && data.departments) {
+      tbody.innerHTML = data.departments.map(d => `
+        <tr>
+          <td><strong>${escapeHtml(d.department)}</strong></td>
+          <td>${d.internal_count}</td>
+          <td>${d.external_count}</td>
+          <td><span class="badge badge-green">${d.committed}</span></td>
+          <td><span class="badge badge-amber">${d.reserved}</span></td>
+          <td><strong>${d.total_active}</strong></td>
+          <td><span class="badge badge-blue">${d.remaining}</span></td>
+        </tr>
+      `).join("");
+    }
+
+  } catch (err) {
+    showToast("Network Error", "Failed to retrieve Workload Distribution data.", "error");
+  }
 }
 
