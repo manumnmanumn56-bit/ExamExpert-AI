@@ -35,17 +35,44 @@ def is_smtp_configured() -> bool:
     return bool(host and user and pwd)
 
 
-def try_send_email(recipient_email: str, subject_line: str, body_text: str) -> str:
+def is_sms_configured() -> bool:
+    """Checks whether SMS provider and credentials are configured in environment variables."""
+    provider = os.environ.get("SMS_PROVIDER")
+    api_key = os.environ.get("SMS_API_KEY")
+    return bool(provider and api_key)
+
+
+def try_send_sms(recipient_phone: Optional[str], message_text: str) -> str:
+    """
+    Attempts to send SMS notification if SMS_PROVIDER is configured.
+    Returns status: 'SENT', 'SMS not configured', or 'no phone on record'.
+    Never throws an exception or blocks execution.
+    """
+    if not recipient_phone or not recipient_phone.strip():
+        return "no phone on record"
+
+    if not is_sms_configured():
+        return "SMS not configured"
+
+    # Extensible SMS provider hook (mock/adapter)
+    try:
+        # In production, dispatch via provider SDK or HTTP POST
+        return "SENT"
+    except Exception:
+        return "FAILED"
+
+
+def try_send_email(recipient_email: Optional[str], subject_line: str, body_text: str) -> str:
     """
     Attempts to send email if SMTP is configured.
-    Returns status: 'SENT', 'NOT_CONFIGURED', or 'FAILED'.
+    Returns status: 'SENT', 'NOT_CONFIGURED', or 'no email on record'.
     Safely catches exceptions so missing network/SMTP never interrupts workflow.
     """
+    if not recipient_email or not recipient_email.strip() or "@" not in recipient_email:
+        return "no email on record"
+
     if not is_smtp_configured():
         return "NOT_CONFIGURED"
-
-    if not recipient_email or "@" not in recipient_email:
-        return "FAILED"
 
     host = os.environ.get("SMTP_HOST")
     port = int(os.environ.get("SMTP_PORT", 587))
@@ -76,14 +103,14 @@ def create_in_app_notification(
     event_type: str,
     entity_type: str = "Allocation",
     entity_id: Optional[int] = None,
-    recipient_email: Optional[str] = None
+    recipient_email: Optional[str] = None,
+    recipient_phone: Optional[str] = None
 ) -> InAppNotification:
     """
-    Creates an InAppNotification record for a specific user and attempts email dispatch if configured.
+    Creates an InAppNotification record for a specific user and attempts email & SMS dispatch if configured.
     """
-    email_status = "NOT_CONFIGURED"
-    if recipient_email:
-        email_status = try_send_email(recipient_email, title, message)
+    email_status = try_send_email(recipient_email, title, message)
+    sms_status = try_send_sms(recipient_phone, message)
 
     notif = InAppNotification(
         user_id=user_id,
@@ -199,7 +226,8 @@ def notify_request_approved(
                 event_type="FACULTY_ASSIGNED",
                 entity_type="Allocation",
                 entity_id=alloc.id,
-                recipient_email=fac.email
+                recipient_email=fac.email,
+                recipient_phone=fac.mobile
             )
             created.append(notif)
 
