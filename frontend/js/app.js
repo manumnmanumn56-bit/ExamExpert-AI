@@ -721,6 +721,7 @@ function switchTab(tabId) {
   if (tabId === "history") loadAllocationHistory();
   if (tabId === "notifications") loadNotifications();
   if (tabId === "acceptance") loadAcceptanceTestSuites();
+  if (tabId === "permissions") loadPermissionsMap();
   if (tabId === "audit") loadAuditLogs();
   if (tabId === "datasets") loadImportHistory();
   if (tabId === "settings") { loadPolicySettings(); loadEligibilitySubjects(); }
@@ -4398,6 +4399,65 @@ async function loadAdminWorkloadDistribution() {
 
   } catch (err) {
     showToast("Network Error", "Failed to retrieve Workload Distribution data.", "error");
+  }
+}
+
+async function loadPermissionsMap() {
+  if (!state.token) return;
+  const container = document.getElementById("permissions-container");
+  if (!container) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/permissions-map`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    if (!res.ok) {
+      showToast("Access Denied", "Could not load permissions map.", "error");
+      return;
+    }
+    const data = await res.json();
+    const roles = data.roles || {};
+
+    container.innerHTML = Object.keys(roles).map(roleKey => {
+      const r = roles[roleKey];
+      const isCurrentRole = state.currentUser && state.currentUser.role === roleKey;
+      const permsRows = (r.permissions || []).map(p => `
+        <tr>
+          <td style="width:140px;"><span class="badge badge-blue">${escapeHtml(p.module)}</span></td>
+          <td style="width:200px;"><strong>${escapeHtml(p.action)}</strong></td>
+          <td>${escapeHtml(p.description)}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <div class="selection-grid-card" style="${isCurrentRole ? 'border: 2px solid var(--royal-blue);' : ''}">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div>
+              <h3 style="color:var(--primary-navy); margin:0;">${escapeHtml(r.title)}</h3>
+              <p style="color:var(--text-muted); font-size:12.5px; margin-top:4px;">${escapeHtml(r.description)}</p>
+            </div>
+            ${isCurrentRole ? '<span class="badge badge-green" style="font-size:12px; padding:4px 10px;">Your Active Role</span>' : ''}
+          </div>
+          <div class="data-table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Functional Module</th>
+                  <th>Authorized Action</th>
+                  <th>Permission Governance & Scope</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${permsRows}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+  } catch (err) {
+    showToast("Network Error", "Failed to retrieve permissions registry.", "error");
   }
 }
 

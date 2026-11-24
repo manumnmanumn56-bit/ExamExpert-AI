@@ -190,6 +190,7 @@
         <button class="nav-pill" onclick="switchTab('history')">📜 Order Archive</button>
         <button class="nav-pill" onclick="switchTab('notifications')">📬 Notifications <span id="header-unread-count" class="badge badge-amber" style="display:none; font-size:10px; margin-left:4px; padding:2px 6px; border-radius:10px;">0</span></button>
         <button class="nav-pill" id="nav-acceptance" onclick="switchTab('acceptance')" style="display:none;">🧪 Test Suites</button>
+        <button class="nav-pill" onclick="switchTab('permissions')">🛡️ Roles & Permissions</button>
         <button class="nav-pill" onclick="switchTab('audit')">🛡️ Audit Logs</button>
         <button class="nav-pill" onclick="switchTab('settings')">⚙️ Settings</button>
       </nav>
@@ -395,6 +396,29 @@
           <!-- Parity Explanation & Shortage Warning Box -->
           <div id="shortage-warning-box" class="shortage-alert-box" style="display:none;"></div>
 
+          <!-- Slice 3: How Allocation Works Accordion Panel -->
+          <div class="how-allocation-panel" style="margin-top:12px; background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:12px;">
+            <details>
+              <summary style="cursor:pointer; font-weight:700; color:var(--primary-navy); font-size:13px; display:flex; align-items:center; gap:6px;">
+                <span>ℹ️ How Question Paper Setter Allocation & Ranking Works (9 Deterministic Levels)</span>
+              </summary>
+              <div style="margin-top:10px; font-size:12px; color:var(--text-main); line-height:1.7;">
+                <p>ExamExpert AI evaluates every faculty member deterministically using 9 strict governance tiers without arbitrary scores or black-box weights:</p>
+                <ol style="margin-left:18px; margin-top:6px;">
+                  <li><strong>Exact Subject Experience</strong>: Has previously handled the target syllabus course code.</li>
+                  <li><strong>Subject Specialization</strong>: Confirmed domain specialization in the subject area.</li>
+                  <li><strong>Related Curriculum Expertise</strong>: Confirmed mapped expertise across related syllabus courses.</li>
+                  <li><strong>Workload Ledger Standing</strong>: Lower combined active workload (Committed + Reserved) receives priority.</li>
+                  <li><strong>Subject Rotation</strong>: Prioritizes faculty who did not set this specific subject in the immediately preceding cycle.</li>
+                  <li><strong>Relevant Teaching Experience</strong>: Higher verified years teaching the specific subject curriculum.</li>
+                  <li><strong>Total Teaching Experience</strong>: Higher overall accredited university service years.</li>
+                  <li><strong>Recorded QP Setting History</strong>: Documented prior university question paper-setting assignments.</li>
+                  <li><strong>Deterministic Tie-Breaker</strong>: Faculty database serial ID ensures reproducible outcomes.</li>
+                </ol>
+              </div>
+            </details>
+          </div>
+
           <!-- Exception Approval Drawer -->
           <div id="exception-approval-box" class="exception-box" style="display:none;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -554,6 +578,26 @@
         <div class="page-title-banner">
           <h2>HOD Allocation Approval Workflow</h2>
           <p id="pending-approvals-subtitle">Review, verify, and approve question-paper setter allocations submitted by the COE Admin.</p>
+        </div>
+
+        <!-- Slice 3: How Allocation Works Accordion Panel for HOD -->
+        <div class="how-allocation-panel" style="margin-bottom:16px; background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:12px;">
+          <details>
+            <summary style="cursor:pointer; font-weight:700; color:var(--primary-navy); font-size:13px; display:flex; align-items:center; gap:6px;">
+              <span>ℹ️ Allocation Ranking Criteria & Statutory Eligibility Policy Reference</span>
+            </summary>
+            <div style="margin-top:10px; font-size:12px; color:var(--text-main); line-height:1.7;">
+              <p>Each question-paper setter was ranked using the institutional 9-level deterministic criteria without arbitrary scoring weights:</p>
+              <ul style="margin-left:18px; margin-top:6px;">
+                <li>Exact Subject Teaching Experience (Highest Priority)</li>
+                <li>Confirmed Specialization in Department Mappings</li>
+                <li>Related Subject Expertise & Cross-Disciplinary Mappings</li>
+                <li>Workload Ledger Standing (Lower active committed + reserved)</li>
+                <li>Prior Paper Setting Rotation (avoid immediate repeat of same course)</li>
+                <li>Relevant & Total Accredited University Service Experience</li>
+              </ul>
+            </div>
+          </details>
         </div>
 
         <div class="selection-grid-card">
@@ -785,6 +829,23 @@
         </div>
       </div>
 
+
+      <!-- =====================================================================
+           SLICE 3: ROLES & PERMISSIONS PAGE
+           ===================================================================== -->
+      <div id="tab-permissions" class="tab-pane" style="display:none;">
+        <div class="page-title-banner">
+          <h2>🛡️ Institutional Roles & System Permissions</h2>
+          <p>Canonical role matrix generated directly from server-side access control policies across Admin, HOD, and Faculty.</p>
+        </div>
+
+        <div id="permissions-container" style="display:flex; flex-direction:column; gap:20px;">
+          <!-- Dynamically populated via /api/admin/permissions-map -->
+          <div class="selection-grid-card">
+            <div style="text-align:center; padding:30px; color:var(--text-muted);">Loading institutional permissions map...</div>
+          </div>
+        </div>
+      </div>
 
       <!-- =====================================================================
            MODULE 5: SECURITY AUDIT REGISTRY

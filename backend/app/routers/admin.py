@@ -20,7 +20,7 @@ from ..models import (
     User, Faculty, Subject, Allocation, EligibilityRules,
     AuditLog, ActiveSession, DepartmentMapping
 )
-from .auth import require_roles, hash_password
+from .auth import require_roles, hash_password, get_current_user
 
 router = APIRouter(prefix="/api/admin", tags=["Admin Governance"])
 
@@ -552,3 +552,60 @@ def update_rules(
     db.commit()
 
     return {"success": True, "message": "Institutional policies successfully updated."}
+
+
+# ─── Module / Slice 3: Canonical Roles & Permissions Map ──────────────────────
+
+PERMISSIONS_MAP = {
+    "Admin": {
+        "title": "Controller of Examinations (Admin)",
+        "description": "Full institutional authority over examination governance, subject master, user provisioning, policy formulation, allocation initiation, and audit oversight.",
+        "permissions": [
+            {"module": "Allocation", "action": "Initiate Allocation", "description": "Select candidates and initiate nomination orders with automatic or manual override options."},
+            {"module": "Allocation", "action": "Find Eligible Faculty", "description": "Execute deterministic 9-level ranking engine across internal and external faculty pools."},
+            {"module": "Faculty", "action": "Edit Faculty Profile", "description": "Modify teaching profile, experience years, designation, and qualification details."},
+            {"module": "Faculty", "action": "Manage Whitelist", "description": "Approve or disable external institutions for external question-paper setting."},
+            {"module": "Syllabus", "action": "Manage Subjects", "description": "Register, update, and manage syllabus courses across all departments."},
+            {"module": "Governance", "action": "Manage Users", "description": "Register, unlock, reset credentials, and activate/deactivate institutional accounts."},
+            {"module": "Policy", "action": "Configure Policies", "description": "Formulate minimum experience, PhD fast-track, and workload capacities."},
+            {"module": "Audit", "action": "View Audit Trail", "description": "Inspect immutable system-wide activity logs with before-and-after values."}
+        ]
+    },
+    "HOD": {
+        "title": "Head of Department (HOD)",
+        "description": "Department-scoped authority over reviewing and deciding on nominated question-paper setters, viewing departmental faculty capacity, and departmental reporting.",
+        "permissions": [
+            {"module": "Allocation", "action": "Approve Allocation", "description": "Formally approve nominated question-paper setters for own department; commits workload."},
+            {"module": "Allocation", "action": "Reject Allocation", "description": "Reject nominated setters with mandatory remarks; releases reserved workload capacity."},
+            {"module": "Dashboard", "action": "HOD Dashboard", "description": "View departmental faculty roster, experience, confirmed expertise, and ledger workloads."},
+            {"module": "Reports", "action": "Department Reports", "description": "Download department-scoped allocation summaries and PDF appointment orders."},
+            {"module": "Syllabus", "action": "View Subjects", "description": "Read-only view of syllabus subjects strictly scoped to own department."},
+            {"module": "Faculty", "action": "View Faculty Roster", "description": "Read-only view of internal faculty within own department."}
+        ]
+    },
+    "Faculty": {
+        "title": "Teaching Faculty Member",
+        "description": "Individual access to personal profile, confirmed course expertise, personal workload ledger standing, assigned question-paper orders, and in-app notifications.",
+        "permissions": [
+            {"module": "Portal", "action": "Faculty Dashboard", "description": "View verified academic profile, qualification, and teaching experience (read-only)."},
+            {"module": "Workload", "action": "View Workload Standing", "description": "Inspect committed and reserved question-paper allocations and policy limits."},
+            {"module": "Expertise", "action": "View Confirmed Expertise", "description": "Inspect verified curriculum subjects mapped to personal teaching profile."},
+            {"module": "Orders", "action": "Download Approved Orders", "description": "Download official appointment order PDFs once approved by departmental HOD."},
+            {"module": "Notifications", "action": "Personal Inbox", "description": "Receive and manage in-app alerts on appointment order nomination and approval."}
+        ]
+    }
+}
+
+@router.get("/permissions-map")
+def get_permissions_map(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns the canonical roles and permissions map across Admin, HOD, and Faculty.
+    Accessible to all authenticated users for transparency and role guidance.
+    """
+    return {
+        "caller_role": current_user.role,
+        "caller_department": current_user.department,
+        "roles": PERMISSIONS_MAP
+    }
