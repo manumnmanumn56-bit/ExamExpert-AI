@@ -133,7 +133,10 @@ def generate_allocation_pdf(alloc_data: dict, output_path: str) -> str:
         pdf.cell(50, 6, _sanitize(f.get("name", "N/A"))[:28], border=1)
         pdf.cell(45, 6, _sanitize(f.get("designation", "Faculty"))[:26], border=1)
         pdf.cell(50, 6, "SJBIT, Bengaluru", border=1)
-        pdf.cell(31, 6, f"Internal Setter (Set {chr(64 + idx)})", border=1, ln=True, align="C")
+        role_label = f"Internal Setter (Set {chr(64 + idx)})"
+        if f.get("is_manual_override"):
+            role_label = f"Manual Exception (Set {chr(64 + idx)})"
+        pdf.cell(31, 6, role_label, border=1, ln=True, align="C")
     pdf.ln(3)
 
     # Section B: External Faculty Table
@@ -156,8 +159,17 @@ def generate_allocation_pdf(alloc_data: dict, output_path: str) -> str:
         pdf.cell(50, 6, _sanitize(f.get("name", "N/A"))[:28], border=1)
         pdf.cell(45, 6, _sanitize(f.get("designation", "Faculty"))[:26], border=1)
         pdf.cell(50, 6, _sanitize(f.get("institution", "External University"))[:28], border=1)
-        pdf.cell(31, 6, f"External Setter (Set {chr(64 + len(int_list) + idx)})", border=1, ln=True, align="C")
+        role_label = f"External Setter (Set {chr(64 + len(int_list) + idx)})"
+        if f.get("is_manual_override"):
+            role_label = f"Manual Exception (Set {chr(64 + len(int_list) + idx)})"
+        pdf.cell(31, 6, role_label, border=1, ln=True, align="C")
     pdf.ln(4)
+
+    if alloc_data.get("has_manual_override") or alloc_data.get("exception_reason"):
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.set_text_color(180, 83, 9)
+        pdf.multi_cell(0, 4.5, _sanitize(f"Special Administrative Provision: Manual exception candidate(s) authorized by COE. Note: {alloc_data.get('exception_reason', 'Shortage exception documented.')}"))
+        pdf.ln(3)
 
     # Instructions Box
     pdf.set_font("Helvetica", "B", 8.5)

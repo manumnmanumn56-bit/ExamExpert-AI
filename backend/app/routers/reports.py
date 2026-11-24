@@ -31,8 +31,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Allocation, Faculty, NotificationLog, AuditLog, User
+from ..models import Allocation, AllocationSetter, Faculty, NotificationLog, AuditLog, User
 from ..services.pdf_generator import generate_allocation_pdf
+from ..services.migration import resolve_department_names
 from ..services.importer import export_faculty_to_excel, export_allocations_to_excel
 from ..services.reports_service import (
     get_summary_report,
@@ -287,7 +288,17 @@ def download_pdf(
     if not alloc:
         raise HTTPException(status_code=404, detail="Allocation record not found.")
 
-    if current_user.role == "HOD":
+    # Slice 1: PDF is strictly blocked until HOD approval (status == "Approved")
+    if alloc.status != "Approved":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Access Denied: Appointment order PDF is only available after HOD approval. Current status is '{alloc.status}'."
+        )
+
+    # Server-side role checks: Admin, HOD of the department, or assigned Faculty
+    if current_user.role == "Admin":
+        pass  # Admin can download any approved order
+    elif current_user.role == "HOD":
         dept_variants = resolve_department_names(db, current_user.department or "")
         if dept_variants and alloc.department not in dept_variants:
             raise HTTPException(status_code=403, detail="Access Denied: You can only download orders for your department.")
@@ -295,17 +306,32 @@ def download_pdf(
         setter = db.query(AllocationSetter).filter_by(allocation_id=alloc.id, faculty_id=current_user.faculty_id).first()
         if not setter:
             raise HTTPException(status_code=403, detail="Access Denied: You are not assigned to this allocation order.")
+    else:
+        raise HTTPException(status_code=403, detail="Access Denied: Role not authorized to download appointment orders.")
 
     subj = alloc.subject
     int_ids = json.loads(alloc.internal_faculty_ids or "[]")
     ext_ids = json.loads(alloc.external_faculty_ids or "[]")
 
+    setters_map = {s.faculty_id: s for s in alloc.setters}
     int_faculty = [
-        {"name": f.name, "designation": f.designation, "institution": f.institution}
+        {
+            "name": f.name,
+            "designation": f.designation,
+            "institution": f.institution,
+            "is_manual_override": getattr(setters_map.get(f.id), "is_manual_override", False),
+            "manual_reason": getattr(setters_map.get(f.id), "manual_reason", None)
+        }
         for f in db.query(Faculty).filter(Faculty.id.in_(int_ids)).all()
     ]
     ext_faculty = [
-        {"name": f.name, "designation": f.designation, "institution": f.institution}
+        {
+            "name": f.name,
+            "designation": f.designation,
+            "institution": f.institution,
+            "is_manual_override": getattr(setters_map.get(f.id), "is_manual_override", False),
+            "manual_reason": getattr(setters_map.get(f.id), "manual_reason", None)
+        }
         for f in db.query(Faculty).filter(Faculty.id.in_(ext_ids)).all()
     ]
 
@@ -315,6 +341,8 @@ def download_pdf(
         "department": alloc.department,
         "semester": alloc.semester,
         "allocation_ratio": alloc.allocation_ratio,
+        "has_manual_override": getattr(alloc, "has_manual_override", False),
+        "exception_reason": alloc.exception_reason,
         "subject": {
             "code": subj.course_code if subj else "TBD",
             "title": subj.title if subj else "Theory Course",

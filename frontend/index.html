@@ -332,8 +332,18 @@
             </div>
           </div>
 
+          <!-- Action Bar: Find Eligible Faculty -->
+          <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border-light); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+            <div style="font-size:12.5px; color:var(--text-muted);">
+              Configure parameters above and click to run the statutory 9-level deterministic matching engine.
+            </div>
+            <button type="button" class="btn btn-primary" id="btn-find-faculty" onclick="triggerFindEligibleFaculty()" style="padding:10px 22px; font-size:13.5px; font-weight:600;">
+              ⚡ Find Eligible Faculty
+            </button>
+          </div>
+
           <!-- Selected Subject Metadata Card -->
-          <div id="subject-detail-banner" class="subject-summary-banner" style="display:none;">
+          <div id="subject-detail-banner" class="subject-summary-banner" style="display:none; margin-top:16px;">
             <div class="subj-info-left">
               <span class="course-code-tag" id="disp-course-code">25MCAI101</span>
               <div class="subj-info-text">
@@ -344,6 +354,19 @@
             <div id="disp-verification-badge">
               <span class="badge badge-green">Officially Verified</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Nobody Eligible Notice Banner -->
+        <div id="no-eligible-warning-box" class="empty-state-card" style="display:none; padding:22px; text-align:center; background:#FFFBEB; border:1px solid #FCD34D; border-radius:8px; margin-bottom:18px;">
+          <h4 style="color:#92400E; margin-bottom:6px; font-size:14px;">⚠️ No Eligible Faculty Found</h4>
+          <p id="no-eligible-reason-text" style="color:#78350F; font-size:12.5px; line-height:1.5; margin-bottom:14px;">
+            No faculty members currently meet the statutory eligibility requirements for this subject (e.g. minimum teaching experience or confirmed expertise mapping).
+          </p>
+          <div style="font-size:12px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="switchTab('mappings')" style="background:#FFFFFF; border:1.5px solid #D97706; color:#92400E; font-weight:600;">
+              🧬 Review & Confirm Subject Expertise Mappings &rarr;
+            </button>
           </div>
         </div>
 
@@ -395,7 +418,10 @@
               <span>SECTION A — ELIGIBLE INTERNAL FACULTY (SJBIT)</span>
               <span class="badge badge-blue" id="internal-quota-counter">Selected: 0 / 2</span>
             </div>
-            <div class="table-toolbar">
+            <div class="table-toolbar" style="display:flex; gap:10px; align-items:center;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openManualFacultyModal('internal')" style="font-size:11.5px; padding:5px 10px; white-space:nowrap;">
+                + Add Internal Faculty Manually
+              </button>
               <input type="text" id="search-internal-table" class="table-search-input" placeholder="Filter internal faculty..." onkeyup="filterFacultyTable('internal')" />
             </div>
           </div>
@@ -429,7 +455,10 @@
               <span>SECTION B — ELIGIBLE EXTERNAL FACULTY (UNIVERSITY / SISTER COLLEGES)</span>
               <span class="badge badge-green" id="external-quota-counter">Selected: 0 / 2</span>
             </div>
-            <div class="table-toolbar">
+            <div class="table-toolbar" style="display:flex; gap:10px; align-items:center;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openManualFacultyModal('external')" style="font-size:11.5px; padding:5px 10px; white-space:nowrap;">
+                + Add External Faculty Manually
+              </button>
               <input type="text" id="search-external-table" class="table-search-input" placeholder="Filter external faculty..." onkeyup="filterFacultyTable('external')" />
             </div>
           </div>
@@ -1500,6 +1529,50 @@
             <div style="display:flex; justify-content:flex-end; gap:10px;">
               <button type="button" class="btn btn-secondary" onclick="closeAdminResetModal()">Cancel</button>
               <button type="submit" class="btn btn-warning" id="btn-submit-admin-reset" style="background:#D97706; color:white; border:none; padding:8px 16px; border-radius:4px; font-weight:600; cursor:pointer;">Reset Password</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual Faculty Selection Modal (Shortage Exception) -->
+    <div id="modal-manual-faculty" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 580px;">
+        <div class="modal-header">
+          <h3 id="manual-modal-title">Manual Faculty Selection (Shortage Exception)</h3>
+          <button class="modal-close-btn" onclick="closeManualFacultyModal()">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          <div style="background:#FFFBEB; border:1px solid #FCD34D; border-radius:6px; padding:12px; margin-bottom:14px; font-size:12px; color:#92400E; line-height:1.5;">
+            <strong>⚠️ Administrative Manual Exception:</strong> Adding faculty outside the automated matching criteria requires documented justification. This action is permanently recorded in the audit log and marked on the final appointment order.
+          </div>
+          <form id="form-manual-faculty" onsubmit="handleApplyManualFaculty(event)">
+            <input type="hidden" id="manual-fac-type" value="internal" />
+            
+            <div class="form-group" style="margin-bottom: 14px;">
+              <label class="form-label">Select Faculty from Roster <span class="req-star">*</span></label>
+              <select id="sel-manual-faculty" class="form-select" required onchange="onManualFacultySelectChange()">
+                <option value="">-- Select Faculty --</option>
+              </select>
+              <div id="manual-faculty-details" style="display:none; margin-top:8px; font-size:12px; background:var(--bg-card-alt); padding:8px 12px; border-radius:4px; color:var(--text-main);"></div>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 14px;">
+              <label class="form-label">Mandatory Justification Reason <span class="req-star">*</span></label>
+              <textarea id="manual-fac-reason" class="form-input" required rows="3" placeholder="Provide detailed institutional reason (e.g. 'External shortage for niche elective; candidate service records physically verified by BOE')"></textarea>
+            </div>
+
+            <div id="manual-capacity-warning-box" style="display:none; margin-bottom:14px; background:#FEF2F2; border:1px solid #FCA5A5; border-radius:6px; padding:10px; font-size:12px; color:#991B1B;">
+              <div><strong>⚠️ Workload Capacity Exceeded:</strong> This candidate is already at/exceeds paper-setting capacity.</div>
+              <label style="display:flex; gap:8px; align-items:center; margin-top:6px; cursor:pointer;">
+                <input type="checkbox" id="chk-manual-override-capacity" />
+                <span>Confirm Admin Capacity Override (Audited)</span>
+              </label>
+            </div>
+
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+              <button type="button" class="btn btn-secondary" onclick="closeManualFacultyModal()">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="btn-save-manual-faculty">Add Faculty as Manual Exception</button>
             </div>
           </form>
         </div>

@@ -30,7 +30,7 @@ from ..database import get_db
 from ..models import (
     Faculty, Subject, Allocation, AllocationConflict,
     EligibilityRules, NotificationLog, AuditLog, User,
-    AllocationSetter, WorkloadLedger
+    AllocationSetter, WorkloadLedger, ExternalInstitution
 )
 from ..services.matcher import rank_candidates, match_and_rank_faculty
 from ..services.migration import resolve_department_names
@@ -125,6 +125,7 @@ class CreateAllocationRequest(BaseModel):
     total_required: int = 2
     internal_faculty_ids: list[int] = []
     external_faculty_ids: list[int] = []
+    manual_exceptions: Optional[list[dict]] = []
     submission_deadline: Optional[str] = None
     exception_reason: Optional[str] = None
     min_handled: int = 1
@@ -141,6 +142,7 @@ class ConfirmAllocationRequest(BaseModel):
     total_required: int = 2
     internal_faculty_ids: list[int]
     external_faculty_ids: list[int]
+    manual_exceptions: Optional[list[dict]] = []
     exception_reason: Optional[str] = None
     exception_approved_by: Optional[str] = "Controller of Examinations"
     submission_deadline: Optional[str] = None
@@ -328,23 +330,75 @@ def create_allocation_request(
             detail=f"An active allocation order already exists for this subject ({existing.reference_number})."
         )
 
+    manual_map = {}
+    if req.manual_exceptions:
+        for m in req.manual_exceptions:
+            if isinstance(m, dict):
+                fid = m.get("faculty_id")
+                if fid:
+                    manual_map[fid] = m
+    has_manual = len(manual_map) > 0
+
     all_ids = req.internal_faculty_ids + req.external_faculty_ids
     if not all_ids:
         raise HTTPException(status_code=400, detail="At least one faculty member must be nominated.")
 
-    # 3. Workload Capacity Pre-Check
+    # 3. Workload Capacity Pre-Check & Manual Exception Validation
     rules = _get_rules(db)
     for fid in all_ids:
         fac = db.query(Faculty).filter_by(id=fid).first()
         if not fac:
             raise HTTPException(status_code=404, detail=f"Faculty record #{fid} not found.")
+
+        # Check: Faculty not already assigned to the same subject in active allocation
+        existing_assignment = db.query(AllocationSetter).join(Allocation).filter(
+            Allocation.subject_id == req.subject_id,
+            AllocationSetter.faculty_id == fid,
+            Allocation.status.in_(["Pending HOD Approval", "Approved", "Confirmed"]),
+            AllocationSetter.status.in_(["Nominated", "Approved"])
+        ).first()
+        if existing_assignment:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Faculty '{fac.name}' is already assigned to this subject in active allocation {existing_assignment.allocation.reference_number}."
+            )
+
+        # External institution whitelist check if manual exception
+        if fid in manual_map and fac.faculty_type == "external":
+            inst = db.query(ExternalInstitution).filter_by(name=fac.institution).first()
+            if not inst or not inst.is_allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot select external faculty '{fac.name}': Institution '{fac.institution}' is not on the approved whitelist."
+                )
+
         workload = get_faculty_workload(db, fid, req.academic_year)
         cap = int(rules.internal_capacity if fac.faculty_type == "internal" else rules.external_capacity)
         if workload["total_active"] + 1 > cap:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Cannot allocate {fac.name}: workload limit of {cap} papers would be exceeded (current active: {workload['total_active']})."
-            )
+            man_item = manual_map.get(fid)
+            if man_item and man_item.get("override_capacity"):
+                db.add(AuditLog(
+                    action="ALLOCATION_CAPACITY_OVERRIDE",
+                    entity_type="Faculty",
+                    entity_id=fid,
+                    details=f"Admin '{current_user.username}' confirmed capacity override for '{fac.name}' ({workload['total_active'] + 1} > {cap}). Reason: {man_item.get('reason')}"
+                ))
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Cannot allocate {fac.name}: workload limit of {cap} papers would be exceeded (current active: {workload['total_active']})."
+                )
+
+        if fid in manual_map:
+            m_reason = str(manual_map[fid].get("reason") or "").strip()
+            if not m_reason:
+                raise HTTPException(status_code=400, detail=f"A justification reason is mandatory for manual exception faculty '{fac.name}'.")
+            db.add(AuditLog(
+                action="ALLOCATION_MANUAL_OVERRIDE_ADDED",
+                entity_type="Faculty",
+                entity_id=fid,
+                details=f"Admin '{current_user.username}' added manual exception for '{fac.name}' ({fac.faculty_type}). Reason: {m_reason}"
+            ))
 
     ref_number = _generate_ref_number()
     total_actual = len(all_ids)
@@ -354,6 +408,11 @@ def create_allocation_request(
     deadline = req.submission_deadline or datetime.now().strftime("%d %B %Y")
 
     status = "Recommended" if req.status == "Recommended" else "Draft"
+
+    combined_reason = req.exception_reason
+    if has_manual:
+        manual_reasons_str = "; ".join([f"{manual_map[fid].get('reason')}" for fid in manual_map if manual_map[fid].get("reason")])
+        combined_reason = f"Manual exception: {manual_reasons_str}" if not combined_reason else f"{combined_reason} | Manual exception: {manual_reasons_str}"
 
     alloc = Allocation(
         reference_number=ref_number,
@@ -371,9 +430,10 @@ def create_allocation_request(
         min_handled=req.min_handled,
         allocation_ratio=ratio_str,
         status=status,
+        has_manual_override=has_manual,
         submission_deadline=deadline,
         submitted_by=current_user.username,
-        exception_reason=req.exception_reason,
+        exception_reason=combined_reason,
         created_at=datetime.utcnow()
     )
     db.add(alloc)
@@ -382,22 +442,28 @@ def create_allocation_request(
     # Create Relational AllocationSetters
     order = 1
     for fid in req.internal_faculty_ids:
+        m_item = manual_map.get(fid)
         db.add(AllocationSetter(
             allocation_id=alloc.id,
             faculty_id=fid,
             faculty_type="internal",
             status="Nominated",
-            assigned_order=order
+            assigned_order=order,
+            is_manual_override=(fid in manual_map),
+            manual_reason=m_item.get("reason") if m_item else None
         ))
         order += 1
 
     for fid in req.external_faculty_ids:
+        m_item = manual_map.get(fid)
         db.add(AllocationSetter(
             allocation_id=alloc.id,
             faculty_id=fid,
             faculty_type="external",
             status="Nominated",
-            assigned_order=order
+            assigned_order=order,
+            is_manual_override=(fid in manual_map),
+            manual_reason=m_item.get("reason") if m_item else None
         ))
         order += 1
 
@@ -410,7 +476,8 @@ def create_allocation_request(
             "reference_number": alloc.reference_number,
             "status": alloc.status,
             "created_by": current_user.username,
-            "nominated_faculty_count": len(all_ids)
+            "nominated_faculty_count": len(all_ids),
+            "has_manual_override": has_manual
         })
     ))
     db.commit()
@@ -571,6 +638,8 @@ def get_pending_approvals(
                 "qualification": fac.qualification if fac else None,
                 "experience_years": fac.experience_years if fac else None,
                 "status": s.status,
+                "is_manual_override": getattr(s, "is_manual_override", False),
+                "manual_reason": getattr(s, "manual_reason", None),
                 "workload": workload
             })
 
@@ -584,6 +653,8 @@ def get_pending_approvals(
             "exam_type": a.exam_type,
             "allocation_mode": a.allocation_mode,
             "status": a.status,
+            "has_manual_override": getattr(a, "has_manual_override", False),
+            "exception_reason": a.exception_reason,
             "submitted_by": a.submitted_by,
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "subject": {
@@ -862,6 +933,71 @@ def cancel_allocation(
     }
 
 
+@router.get("/available-roster")
+def get_available_roster(
+    subject_id: int,
+    faculty_type: str = "internal",  # 'internal' | 'external'
+    academic_year: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["Admin"]))
+):
+    """
+    Returns available faculty from the roster for manual addition during shortages.
+    For external faculty, strictly filters to allowed institutions.
+    Flags candidates already assigned to the subject in an active order.
+    """
+    subject = db.query(Subject).filter_by(id=subject_id).first()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found.")
+
+    rules = _get_rules(db)
+    ay = academic_year or (rules.active_academic_year if rules else "2025-26")
+
+    assigned_subquery = db.query(AllocationSetter.faculty_id).join(Allocation).filter(
+        Allocation.subject_id == subject_id,
+        Allocation.status.in_(["Pending HOD Approval", "Approved", "Confirmed"]),
+        AllocationSetter.status.in_(["Nominated", "Approved"])
+    ).subquery()
+
+    query = db.query(Faculty).filter(Faculty.faculty_type == faculty_type)
+
+    if faculty_type == "external":
+        allowed_insts = [inst.name for inst in db.query(ExternalInstitution).filter(ExternalInstitution.is_allowed == True).all()]
+        if allowed_insts:
+            query = query.filter(Faculty.institution.in_(allowed_insts))
+
+    faculty_list = query.order_by(Faculty.name).all()
+    assigned_ids = {row[0] for row in db.query(assigned_subquery).all()}
+
+    cap = int(rules.internal_capacity if faculty_type == "internal" else rules.external_capacity)
+    results = []
+    for f in faculty_list:
+        wl = get_faculty_workload(db, f.id, ay)
+        results.append({
+            "id": f.id,
+            "name": f.name,
+            "designation": f.designation or "Not provided",
+            "department": f.department or "Not provided",
+            "institution": f.institution or ("SJBIT" if faculty_type == "internal" else "Not provided"),
+            "experience_years": f.experience_years if f.experience_years is not None else "Not provided",
+            "qualification": f.qualification or "Not provided",
+            "workload_committed": wl["committed"],
+            "workload_reserved": wl["reserved"],
+            "workload_active": wl["total_active"],
+            "capacity": cap,
+            "is_capacity_exceeded": wl["total_active"] >= cap,
+            "is_already_assigned": f.id in assigned_ids
+        })
+
+    return {
+        "success": True,
+        "subject_id": subject_id,
+        "faculty_type": faculty_type,
+        "total": len(results),
+        "roster": results
+    }
+
+
 # ─── Legacy / Confirm Backward Compatibility Endpoint ────────────────────────
 
 @router.post("/confirm")
@@ -900,6 +1036,7 @@ def confirm_allocation(
         total_required=req.total_required,
         internal_faculty_ids=req.internal_faculty_ids,
         external_faculty_ids=req.external_faculty_ids,
+        manual_exceptions=req.manual_exceptions,
         submission_deadline=req.submission_deadline,
         exception_reason=req.exception_reason,
         min_handled=req.min_handled,
@@ -969,6 +1106,8 @@ def get_allocation_history(
             "exam_type": a.exam_type,
             "allocation_mode": a.allocation_mode,
             "status": a.status,
+            "has_manual_override": getattr(a, "has_manual_override", False),
+            "exception_reason": a.exception_reason,
             "allocation_ratio": a.allocation_ratio,
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "confirmed_at": a.confirmed_at.isoformat() if a.confirmed_at else None,
@@ -988,7 +1127,9 @@ def get_allocation_history(
                     "name": s.faculty.name if s.faculty else f"ID #{s.faculty_id}",
                     "faculty_type": s.faculty_type,
                     "designation": s.faculty.designation if s.faculty else None,
-                    "status": s.status
+                    "status": s.status,
+                    "is_manual_override": getattr(s, "is_manual_override", False),
+                    "manual_reason": getattr(s, "manual_reason", None)
                 }
                 for s in setters
             ]
@@ -1025,6 +1166,8 @@ def get_allocation_detail(
         "exam_type": a.exam_type,
         "allocation_mode": a.allocation_mode,
         "status": a.status,
+        "has_manual_override": getattr(a, "has_manual_override", False),
+        "exception_reason": a.exception_reason,
         "total_required": a.total_required,
         "allocation_ratio": a.allocation_ratio,
         "submission_deadline": a.submission_deadline,
@@ -1050,6 +1193,8 @@ def get_allocation_detail(
                 "department": s.faculty.department if s.faculty else None,
                 "institution": s.faculty.institution if s.faculty else None,
                 "status": s.status,
+                "is_manual_override": getattr(s, "is_manual_override", False),
+                "manual_reason": getattr(s, "manual_reason", None),
                 "assigned_order": s.assigned_order
             }
             for s in setters

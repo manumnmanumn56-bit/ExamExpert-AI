@@ -153,6 +153,7 @@ class Allocation(Base):
     submitted_by = Column(String(100))
     exception_reason = Column(Text)
     exception_approved_by = Column(String(100))
+    has_manual_override = Column(Boolean, default=False)
     hod_remarks = Column(Text, nullable=True)
     approved_by = Column(String(100), nullable=True)
     approved_at = Column(DateTime, nullable=True)
@@ -172,6 +173,8 @@ class AllocationSetter(Base):
     status = Column(String(50), default="Nominated")   # 'Nominated' | 'Approved' | 'Rejected' | 'Replaced'
     verified_handled_count = Column(Integer, nullable=True)
     assigned_order = Column(Integer, default=1)
+    is_manual_override = Column(Boolean, default=False)
+    manual_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     allocation = relationship("Allocation", back_populates="setters")

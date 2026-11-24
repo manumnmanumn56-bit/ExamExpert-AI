@@ -23,7 +23,8 @@
 | **Module 10 (Slice 2)** | Deterministic Matching Engine | **DONE** | `tests/test_module10_matching.py` | 9-level deterministic ranking, no arbitrary scores, explainable criteria reasons, RBAC. |
 | **Module 11 (Slice 3)** | Allocation Request & Recommendation UI | **DONE** | `tests/test_module11_allocation.py` | Mode splits (50:50, Internal/External only), MCA 4-sem rule, RESERVED ledger entries. |
 | **Module 12 (Slice 4)** | HOD Approval Workflow & Audit Trail | **DONE** | `tests/test_module12_hod_approval.py` | Pending approvals tab, COMMITTED / RELEASED ledger decisions, audit trail. |
-| **Module 13 (Slice A)** | In-App & Email Notifications | **DONE** | `tests/test_module13_notifications.py` | In-app alerts (submitted, approved, rejected, assigned), personal inbox, unread counts, SMTP fallback. |
+| **Slice 1 (Flow Fix)** | Allocation Flow Fix & Simplification | **DONE** | `tests/test_slice1_allocation_flow.py` | Submit sets Pending HOD Approval with RESERVED ledger entries; PDF blocked until Approved (400/403); manual selection during shortage with whitelist & audit log. |
+| **Slice A (Module 13)** | In-App & Email Notifications | **DONE** | `tests/test_module13_notifications.py` | In-app alerts (submitted, approved, rejected, assigned), personal inbox, unread counts, SMTP fallback. |
 | **Module 14 (Slice B)** | Real Data Reports & Analytics | **DONE** | `tests/test_module14_reports.py` | Multi-dimensional real data reports, RBAC scoping, Excel/PDF/print exports, formula injection safety. |
 | **Module 15 (Slice C)** | Acceptance Testing & Security Review | **DONE** | `tests/test_module15_acceptance.py` | Admin test execution runner on temp isolated DB, path-traversal defense, 3-min ceiling, SECURITY_AUDIT.md. |
 | **Slice D (Cleanup)** | Data Integrity & Governance Cleanup | **DONE** | `tests/test_sliceD_cleanup.py` | Nagamani S workbook email match, syllabus title key (0 conflict dry-run), tiered mappings & untouched RELATED purge. |

@@ -90,6 +90,14 @@ def run_database_migrations(db: Session):
         alloc_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(allocations)")).fetchall()]
         if "allocation_mode" not in alloc_cols:
             conn.execute(text("ALTER TABLE allocations ADD COLUMN allocation_mode VARCHAR(30) DEFAULT 'Balanced'"))
+        if "has_manual_override" not in alloc_cols:
+            conn.execute(text("ALTER TABLE allocations ADD COLUMN has_manual_override BOOLEAN DEFAULT 0"))
+
+        setter_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(allocation_setters)")).fetchall()]
+        if "is_manual_override" not in setter_cols:
+            conn.execute(text("ALTER TABLE allocation_setters ADD COLUMN is_manual_override BOOLEAN DEFAULT 0"))
+        if "manual_reason" not in setter_cols:
+            conn.execute(text("ALTER TABLE allocation_setters ADD COLUMN manual_reason TEXT"))
 
         # Workload ledger checks & triggers
         workload_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(workload_ledger)")).fetchall()]

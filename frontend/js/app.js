@@ -875,21 +875,46 @@ function onSubjectChange() {
   badgeEl.innerHTML = `<span class="badge ${state.subjectData.is_verified ? 'badge-green' : 'badge-amber'}">${state.subjectData.badge_label}</span>`;
   document.getElementById("subject-detail-banner").style.display = "flex";
 
-  // Enable handling count & total faculty controls
+  // Enable handling count & total faculty controls and find button
   document.getElementById("sel-min-handled").disabled = false;
   document.getElementById("sel-total-required").disabled = false;
+  const findBtn = document.getElementById("btn-find-faculty");
+  if (findBtn) findBtn.disabled = false;
 
-  triggerFacultyRecommendation();
+  // Reset any previous manual exceptions
+  state.manualExceptionsMap = {};
 }
 
 function onMinHandledChange() {
   state.minHandled = parseInt(document.getElementById("sel-min-handled").value);
-  triggerFacultyRecommendation();
 }
 
 function onTotalRequiredChange() {
   state.totalRequired = parseInt(document.getElementById("sel-total-required").value);
-  triggerFacultyRecommendation();
+}
+
+async function triggerFindEligibleFaculty() {
+  if (!state.subjectId) {
+    showToast("Subject Required", "Please select a verified subject first.", "warning");
+    return;
+  }
+  const findBtn = document.getElementById("btn-find-faculty");
+  if (findBtn) {
+    findBtn.disabled = true;
+    findBtn.textContent = "Searching...";
+  }
+  try {
+    await triggerFacultyRecommendation();
+    const parityCard = document.getElementById("parity-status-card");
+    if (parityCard) {
+      parityCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  } finally {
+    if (findBtn) {
+      findBtn.disabled = false;
+      findBtn.textContent = "⚡ Find Eligible Faculty";
+    }
+  }
 }
 
 
@@ -924,6 +949,17 @@ async function triggerFacultyRecommendation() {
     state.allInternalCandidates = data.all_internal_candidates;
     state.allExternalCandidates = data.all_external_candidates;
     state.requiresException = data.requires_exception;
+
+    // Check if both candidate lists are empty
+    const noEligibleBox = document.getElementById("no-eligible-warning-box");
+    const totalFound = (state.allInternalCandidates?.length || 0) + (state.allExternalCandidates?.length || 0);
+    if (noEligibleBox) {
+      if (totalFound === 0) {
+        noEligibleBox.style.display = "block";
+      } else {
+        noEligibleBox.style.display = "none";
+      }
+    }
 
     // Render Quota Status
     document.getElementById("quota-pill-internal").textContent = `Internal Quota: ${data.selected_internal.length} / ${data.internal_quota} (50%)`;
@@ -1205,9 +1241,10 @@ async function executeFinalAllocationSubmission() {
 
   const btn = document.getElementById("btn-final-submit");
   btn.disabled = true;
-  btn.textContent = "LOCKING ALLOCATION & GENERATING ORDER...";
+  btn.textContent = "SUBMITTING TO HOD FOR APPROVAL...";
 
   try {
+    const manualExceptionsList = Object.values(state.manualExceptionsMap || {});
     const payload = {
       subject_id: state.subjectId,
       academic_year: state.academicYear,
@@ -1217,6 +1254,7 @@ async function executeFinalAllocationSubmission() {
       total_required: state.totalRequired,
       internal_faculty_ids: Array.from(state.selectedInternalIds),
       external_faculty_ids: Array.from(state.selectedExternalIds),
+      manual_exceptions: manualExceptionsList,
       exception_reason: state.exceptionReason || null,
       exception_approved_by: "Controller of Examinations",
       submission_deadline: "Within 10 days of order receipt"
@@ -1235,7 +1273,7 @@ async function executeFinalAllocationSubmission() {
     if (!res.ok) {
       showToast("Submission Failed", result.detail || "Failed to submit allocation.", "error");
       btn.disabled = false;
-      btn.textContent = "SUBMIT ALLOCATION FOR HOD APPROVAL →";
+      btn.textContent = "Submit to HOD for Approval";
       return;
     }
 
@@ -1244,18 +1282,184 @@ async function executeFinalAllocationSubmission() {
 
     showToast("Submitted to HOD", result.message || "Allocation submitted for HOD approval and workload reserved.", "success");
 
-    // Show Success Modal
+    // Show Success Modal without automatic PDF download
     document.getElementById("modal-ref-number").textContent = result.reference_number;
     document.getElementById("success-modal").classList.add("active");
 
     btn.disabled = false;
-    btn.textContent = "SUBMIT ALLOCATION FOR HOD APPROVAL →";
+    btn.textContent = "Submit to HOD for Approval";
 
   } catch (err) {
     showToast("Network Error", "Error executing allocation submission.", "error");
     btn.disabled = false;
-    btn.textContent = "SUBMIT ALLOCATION FOR HOD APPROVAL →";
+    btn.textContent = "Submit to HOD for Approval";
   }
+}
+
+// ─── Manual Faculty Selection Flow ───────────────────────────────────────────
+let currentManualFacultyType = "internal";
+let manualRosterCache = [];
+
+async function openManualFacultyModal(facultyType) {
+  if (!state.subjectId) {
+    showToast("Subject Required", "Please select a subject first.", "warning");
+    return;
+  }
+  currentManualFacultyType = facultyType;
+  document.getElementById("modal-manual-title").textContent =
+    facultyType === "internal" ? "Add Internal Faculty Manually" : "Add External Faculty Manually";
+  document.getElementById("manual-faculty-reason").value = "";
+  document.getElementById("manual-capacity-override").checked = false;
+  document.getElementById("manual-faculty-details-box").style.display = "none";
+  document.getElementById("manual-faculty-conflict-warning").style.display = "none";
+
+  const sel = document.getElementById("sel-manual-faculty");
+  sel.innerHTML = '<option value="">Loading roster candidates...</option>';
+  document.getElementById("modal-manual-faculty").classList.add("active");
+
+  try {
+    const res = await fetch(`${API_BASE}/api/allocation/available-roster?subject_id=${state.subjectId}&faculty_type=${facultyType}`, {
+      headers: { "Authorization": `Bearer ${state.token}` }
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast("Error", data.detail || "Failed to load roster.", "error");
+      return;
+    }
+    manualRosterCache = data.roster || [];
+    sel.innerHTML = '<option value="">-- Choose faculty member --</option>';
+    if (manualRosterCache.length === 0) {
+      sel.innerHTML = '<option value="">No eligible roster candidates available</option>';
+      return;
+    }
+    manualRosterCache.forEach(f => {
+      const opt = document.createElement("option");
+      opt.value = f.id;
+      opt.textContent = `${f.name} (${f.designation || 'Faculty'} - ${f.department || f.institution || ''}) [Workload: ${f.active_workload}/${f.max_capacity}]`;
+      sel.appendChild(opt);
+    });
+  } catch (err) {
+    showToast("Network Error", "Failed to load faculty roster.", "error");
+  }
+}
+
+function closeManualFacultyModal() {
+  document.getElementById("modal-manual-faculty").classList.remove("active");
+}
+
+function onManualFacultySelectChange() {
+  const sel = document.getElementById("sel-manual-faculty");
+  const facId = parseInt(sel.value);
+  const detailBox = document.getElementById("manual-faculty-details-box");
+  const warnBox = document.getElementById("manual-faculty-conflict-warning");
+  if (!facId) {
+    detailBox.style.display = "none";
+    warnBox.style.display = "none";
+    return;
+  }
+  const f = manualRosterCache.find(x => x.id === facId);
+  if (!f) return;
+
+  document.getElementById("manual-faculty-detail-name").textContent = f.name;
+  document.getElementById("manual-faculty-detail-dept").textContent = f.department || f.institution || "—";
+  document.getElementById("manual-faculty-detail-workload").textContent = `${f.active_workload} active / ${f.max_capacity} max`;
+  detailBox.style.display = "block";
+
+  let warnings = [];
+  if (f.already_assigned_subject) {
+    warnings.push("Already assigned to this subject in the current cycle.");
+  }
+  if (f.at_capacity) {
+    warnings.push(`Workload limit reached (${f.active_workload}/${f.max_capacity}). Overriding capacity will be logged in the audit trail.`);
+  }
+  if (warnings.length > 0) {
+    warnBox.innerHTML = warnings.join("<br/>");
+    warnBox.style.display = "block";
+  } else {
+    warnBox.style.display = "none";
+  }
+}
+
+function handleApplyManualFaculty(e) {
+  e.preventDefault();
+  const sel = document.getElementById("sel-manual-faculty");
+  const facId = parseInt(sel.value);
+  const reason = (document.getElementById("manual-faculty-reason").value || "").trim();
+  const allowCapacityOverride = document.getElementById("manual-capacity-override").checked;
+
+  if (!facId) {
+    showToast("Selection Missing", "Please select a faculty member from the dropdown.", "warning");
+    return;
+  }
+  if (!reason) {
+    showToast("Reason Required", "A mandatory justification reason must be documented for manual addition.", "warning");
+    return;
+  }
+
+  const f = manualRosterCache.find(x => x.id === facId);
+  if (!f) return;
+
+  if (f.already_assigned_subject) {
+    showToast("Assignment Conflict", "Faculty member is already assigned to this subject.", "error");
+    return;
+  }
+  if (f.at_capacity && !allowCapacityOverride) {
+    showToast("Capacity Exceeded", "Faculty has reached maximum capacity. Check 'Authorize capacity override' if approved.", "warning");
+    return;
+  }
+
+  // Record into state.manualExceptionsMap
+  if (!state.manualExceptionsMap) state.manualExceptionsMap = {};
+  state.manualExceptionsMap[facId] = {
+    faculty_id: facId,
+    reason: reason,
+    allow_capacity_override: allowCapacityOverride
+  };
+
+  // Add into selected and candidate list if not already present
+  const manualCandidate = {
+    faculty_id: f.id,
+    faculty_name: f.name,
+    email: f.email || "",
+    designation: f.designation || "Faculty",
+    department: f.department || "SJBIT",
+    institution: f.institution || "SJBIT",
+    qualification: f.qualification || "M.Tech",
+    experience_years: f.experience_years || 0,
+    course_handled_display: "Manual Addition",
+    meets_min_handled: true,
+    eligibility_status: "Manual Exception",
+    rank: 999,
+    criteria_reasons: { tier: "Manual Exception: " + reason },
+    is_manual_override: true,
+    manual_reason: reason
+  };
+
+  if (currentManualFacultyType === "internal") {
+    state.selectedInternalIds.add(facId);
+    if (!state.allInternalCandidates.some(x => x.faculty_id === facId)) {
+      state.allInternalCandidates.push(manualCandidate);
+    } else {
+      const existing = state.allInternalCandidates.find(x => x.faculty_id === facId);
+      existing.is_manual_override = true;
+      existing.manual_reason = reason;
+    }
+    renderInternalFacultyTable();
+  } else {
+    state.selectedExternalIds.add(facId);
+    if (!state.allExternalCandidates.some(x => x.faculty_id === facId)) {
+      state.allExternalCandidates.push(manualCandidate);
+    } else {
+      const existing = state.allExternalCandidates.find(x => x.faculty_id === facId);
+      existing.is_manual_override = true;
+      existing.manual_reason = reason;
+    }
+    renderExternalFacultyTable();
+  }
+
+  updateAllocationSummary();
+  closeManualFacultyModal();
+  showToast("Faculty Added", `${f.name} added as manual exception.`, "success");
 }
 
 function triggerModalPDFDownload() {
@@ -1677,10 +1881,15 @@ async function loadPendingApprovals() {
       let settersHtml = "";
       (a.setters || []).forEach((s, idx) => {
         const wl = s.workload || {};
+        const isManual = s.is_manual_override || false;
         settersHtml += `
           <tr>
             <td>${idx + 1}</td>
-            <td><strong>${escapeHtml(s.name || '—')}</strong></td>
+            <td>
+              <strong>${escapeHtml(s.name || '—')}</strong>
+              ${isManual ? `<span class="badge badge-amber" style="margin-left:6px; font-size:10px;">Manual Exception</span>` : ''}
+              ${s.manual_reason ? `<div style="font-size:11px; color:#B45309; margin-top:2px; font-style:italic;">Reason: ${escapeHtml(s.manual_reason)}</div>` : ''}
+            </td>
             <td><span class="badge ${s.faculty_type === 'internal' ? 'badge-blue' : 'badge-amber'}">${escapeHtml((s.faculty_type || '').toUpperCase())}</span></td>
             <td>${escapeHtml(s.designation || '—')}</td>
             <td>${escapeHtml(s.department || s.institution || '—')}</td>
@@ -1863,20 +2072,30 @@ async function loadAllocationHistory() {
 
     data.allocations.forEach(a => {
       const tr = document.createElement("tr");
+      const isApproved = a.status === 'Approved' || a.status === 'Confirmed';
+      const isPending = a.status === 'Pending HOD Approval';
+      let actionHtml = '';
+      if (isApproved) {
+        actionHtml = `
+          <a href="/api/reports/download-pdf/${a.id}" target="_blank" class="btn btn-secondary btn-sm" style="padding:4px 8px; font-size:11px; background:#059669; color:white;">
+            📄 Download PDF
+          </a>`;
+      } else if (isPending) {
+        actionHtml = `<span style="font-size:11.5px; color:#D97706; font-weight:600;">⏳ Awaiting HOD approval</span>`;
+      } else {
+        actionHtml = `<span style="font-size:11.5px; color:#DC2626; font-weight:600;">${escapeHtml(a.status)}</span>`;
+      }
+
       tr.innerHTML = `
-        <td><strong>${a.reference_number}</strong></td>
-        <td>${a.academic_year}</td>
-        <td>${a.department}</td>
-        <td>${a.semester}</td>
-        <td>${a.course_code} - ${a.subject_title}</td>
-        <td>${a.total_required}</td>
-        <td><span class="badge badge-blue">${a.allocation_ratio}</span></td>
-        <td><span class="badge ${a.status === 'Confirmed' ? 'badge-green' : 'badge-red'}">${a.status}</span></td>
-        <td>
-          <a href="/api/reports/download-pdf/${a.id}" target="_blank" class="btn btn-secondary btn-sm" style="padding:4px 8px; font-size:11px;">
-            📄 PDF Order
-          </a>
-        </td>
+        <td><strong>${escapeHtml(a.reference_number)}</strong>${a.has_manual_override ? ' <span class="badge badge-amber" style="font-size:10px;">Manual Exception</span>' : ''}</td>
+        <td>${escapeHtml(a.academic_year || '')}</td>
+        <td>${escapeHtml(a.department || '')}</td>
+        <td>${escapeHtml(a.semester || '')}</td>
+        <td>${escapeHtml(a.course_code || '')} - ${escapeHtml(a.subject_title || '')}</td>
+        <td>${a.total_required || 0}</td>
+        <td><span class="badge badge-blue">${escapeHtml(a.allocation_ratio || '')}</span></td>
+        <td><span class="badge ${isApproved ? 'badge-green' : isPending ? 'badge-amber' : 'badge-red'}">${escapeHtml(a.status)}</span></td>
+        <td>${actionHtml}</td>
       `;
       tbody.appendChild(tr);
     });
